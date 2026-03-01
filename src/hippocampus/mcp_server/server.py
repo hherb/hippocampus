@@ -22,14 +22,37 @@ _embedder: OllamaEmbedding | None = None
 _owner_id: str = settings.default_owner
 
 
+def _require_manager() -> MemoryManager:
+    """Return the active MemoryManager, or raise if the server is not ready."""
+    if _manager is None:
+        raise RuntimeError("Hippocampus server is not initialised yet")
+    return _manager
+
+
+def _parse_json(raw: str | None, field_name: str = "value") -> Any:
+    """Parse a JSON string from tool input, returning *None* for empty input."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON in '{field_name}': {exc.args[0]}"
+        ) from exc
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Initialise the database pool, schema, and embedding provider."""
     global _manager, _embedder
     pool = await create_pool(settings)
-    await ensure_schema(pool, settings)
-    _embedder = OllamaEmbedding(settings)
-    _manager = MemoryManager(pool, _embedder, _owner_id)
+    try:
+        await ensure_schema(pool, settings)
+        _embedder = OllamaEmbedding(settings)
+        _manager = MemoryManager(pool, _embedder, _owner_id)
+    except BaseException:
+        await pool.close()
+        raise
     try:
         yield
     finally:
@@ -78,8 +101,9 @@ async def remember(
         session_id: Optional session identifier for grouping.
         metadata: Optional JSON string of additional key-value pairs.
     """
-    meta = json.loads(metadata) if metadata else None
-    episode = await _manager.episodic.store(content, source, session_id, meta)
+    mgr = _require_manager()
+    meta = _parse_json(metadata, "metadata")
+    episode = await mgr.episodic.store(content, source, session_id, meta)
     return _json({"stored": episode.to_dict()})
 
 
@@ -101,7 +125,8 @@ async def recall(
         source: Filter by source type.
         session_id: Filter by session.
     """
-    results = await _manager.episodic.recall(
+    mgr = _require_manager()
+    results = await mgr.episodic.recall(
         query, limit, min_similarity, source, session_id
     )
     return _json({
@@ -124,7 +149,8 @@ async def recall_recent(
         limit: Maximum number of results.
         session_id: Filter by session.
     """
-    episodes = await _manager.episodic.recall_recent(limit, session_id)
+    mgr = _require_manager()
+    episodes = await mgr.episodic.recall_recent(limit, session_id)
     return _json({"episodes": [ep.to_dict() for ep in episodes]})
 
 
@@ -153,8 +179,9 @@ async def learn_entity(
         metadata: Optional JSON string of additional properties.
         confidence: Confidence score 0.0-1.0.
     """
-    meta = json.loads(metadata) if metadata else None
-    entity = await _manager.semantic.add_entity(
+    mgr = _require_manager()
+    meta = _parse_json(metadata, "metadata")
+    entity = await mgr.semantic.add_entity(
         name, entity_type, description, meta, confidence
     )
     return _json({"entity": entity.to_dict()})
@@ -182,16 +209,17 @@ async def learn_relation(
         confidence: Confidence score 0.0-1.0.
         metadata: Optional JSON string of additional properties.
     """
-    subj = await _manager.semantic.get_entity_by_name(subject, subject_type)
+    mgr = _require_manager()
+    subj = await mgr.semantic.get_entity_by_name(subject, subject_type)
     if subj is None:
-        subj = await _manager.semantic.add_entity(subject, subject_type)
+        subj = await mgr.semantic.add_entity(subject, subject_type)
 
-    obj = await _manager.semantic.get_entity_by_name(object_, object_type)
+    obj = await mgr.semantic.get_entity_by_name(object_, object_type)
     if obj is None:
-        obj = await _manager.semantic.add_entity(object_, object_type)
+        obj = await mgr.semantic.add_entity(object_, object_type)
 
-    meta = json.loads(metadata) if metadata else None
-    relation = await _manager.semantic.add_relation(
+    meta = _parse_json(metadata, "metadata")
+    relation = await mgr.semantic.add_relation(
         subj.id, predicate, obj.id, meta, confidence
     )
     return _json({
@@ -218,7 +246,8 @@ async def find_entities(
         limit: Maximum results.
         semantic: Use semantic similarity (True) or text matching (False).
     """
-    results = await _manager.semantic.find_entities(
+    mgr = _require_manager()
+    results = await mgr.semantic.find_entities(
         query, entity_type, limit, semantic
     )
     return _json({
@@ -245,13 +274,14 @@ async def query_relations(
         predicate: Filter by relationship type.
         limit: Maximum results.
     """
+    mgr = _require_manager()
     entity_id = None
     if entity_name and entity_type:
-        entity = await _manager.semantic.get_entity_by_name(entity_name, entity_type)
+        entity = await mgr.semantic.get_entity_by_name(entity_name, entity_type)
         if entity:
             entity_id = entity.id
 
-    relations = await _manager.semantic.get_relations(
+    relations = await mgr.semantic.get_relations(
         entity_id=entity_id, predicate=predicate, limit=limit
     )
     return _json({"relations": [r.to_dict() for r in relations]})
@@ -271,12 +301,13 @@ async def explore_connections(
         entity_type: Starting entity type.
         max_depth: How many hops to traverse (1-3).
     """
-    entity = await _manager.semantic.get_entity_by_name(entity_name, entity_type)
+    mgr = _require_manager()
+    entity = await mgr.semantic.get_entity_by_name(entity_name, entity_type)
     if entity is None:
         return _json({"error": f"Entity '{entity_name}' ({entity_type}) not found"})
 
-    max_depth = min(max_depth, 3)
-    subgraph = await _manager.semantic.traverse(entity.id, max_depth)
+    max_depth = max(1, min(max_depth, 3))
+    subgraph = await mgr.semantic.traverse(entity.id, max_depth)
     return _json({"entity": entity.to_dict(), "connections": subgraph})
 
 
@@ -300,12 +331,14 @@ async def reflect(
         source_episode_ids: JSON array of episode UUIDs this reflects on.
         metadata: Optional JSON string of additional properties.
     """
+    mgr = _require_manager()
     ep_ids = None
     if source_episode_ids:
-        ep_ids = [UUID(eid) for eid in json.loads(source_episode_ids)]
-    meta = json.loads(metadata) if metadata else None
+        raw_ids = _parse_json(source_episode_ids, "source_episode_ids")
+        ep_ids = [UUID(eid) for eid in raw_ids]
+    meta = _parse_json(metadata, "metadata")
 
-    reflection = await _manager.reflection.create(
+    reflection = await mgr.reflection.create(
         content, reflection_type, ep_ids, meta
     )
     return _json({"reflection": reflection.to_dict()})
@@ -324,7 +357,8 @@ async def search_reflections(
         reflection_type: Filter by type (summary, insight, contradiction, pattern).
         limit: Maximum results.
     """
-    results = await _manager.reflection.search(query, reflection_type, limit)
+    mgr = _require_manager()
+    results = await mgr.reflection.search(query, reflection_type, limit)
     return _json({
         "reflections": [
             {"reflection": ref.to_dict(), "similarity": round(sim, SIMILARITY_PRECISION)}
@@ -357,14 +391,15 @@ async def propose_revision(
         proposed_changes: JSON string describing the changes.
         reason: Why this revision is proposed.
     """
-    entity = await _manager.semantic.get_entity_by_name(
+    mgr = _require_manager()
+    entity = await mgr.semantic.get_entity_by_name(
         target_name, target_entity_type
     )
     if entity is None:
         return _json({"error": f"Entity '{target_name}' ({target_entity_type}) not found"})
 
-    changes = json.loads(proposed_changes)
-    proposal = await _manager.reflection.propose_revision(
+    changes = _parse_json(proposed_changes, "proposed_changes")
+    proposal = await mgr.reflection.propose_revision(
         target_type, entity.id, action, changes, reason
     )
     return _json({"proposal": proposal.to_dict()})
@@ -377,7 +412,8 @@ async def pending_revisions(limit: int = 20) -> str:
     Args:
         limit: Maximum results.
     """
-    proposals = await _manager.reflection.list_revisions("pending", limit)
+    mgr = _require_manager()
+    proposals = await mgr.reflection.list_revisions("pending", limit)
     return _json({"proposals": [p.to_dict() for p in proposals]})
 
 

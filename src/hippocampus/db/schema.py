@@ -13,10 +13,20 @@ def get_schema_sql(dim: int) -> str:
     Args:
         dim: Vector dimension used for embedding columns.
     """
+    dim = int(dim)  # belt-and-suspenders against non-int input
     return f"""
     -- Extensions
     CREATE EXTENSION IF NOT EXISTS vector;
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+    -- Trigger function for updated_at columns
+    CREATE OR REPLACE FUNCTION update_updated_at()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
 
     -- Episodic Memory
     CREATE TABLE IF NOT EXISTS episodes (
@@ -38,6 +48,10 @@ def get_schema_sql(dim: int) -> str:
     CREATE INDEX IF NOT EXISTS idx_episodes_session_id ON episodes (session_id);
     CREATE INDEX IF NOT EXISTS idx_episodes_source ON episodes (source);
 
+    DROP TRIGGER IF EXISTS trg_episodes_updated_at ON episodes;
+    CREATE TRIGGER trg_episodes_updated_at BEFORE UPDATE ON episodes
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
     -- Knowledge Graph: Entities
     CREATE TABLE IF NOT EXISTS entities (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -47,7 +61,8 @@ def get_schema_sql(dim: int) -> str:
         description TEXT,
         embedding vector({dim}),
         metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-        confidence FLOAT NOT NULL DEFAULT 1.0,
+        confidence FLOAT NOT NULL DEFAULT 1.0
+            CHECK (confidence >= 0 AND confidence <= 1),
         source_episode_id UUID REFERENCES episodes(id) ON DELETE SET NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -61,6 +76,10 @@ def get_schema_sql(dim: int) -> str:
     CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_owner_name_type
         ON entities (owner_id, name, entity_type);
 
+    DROP TRIGGER IF EXISTS trg_entities_updated_at ON entities;
+    CREATE TRIGGER trg_entities_updated_at BEFORE UPDATE ON entities
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
     -- Knowledge Graph: Relations
     CREATE TABLE IF NOT EXISTS relations (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -69,7 +88,8 @@ def get_schema_sql(dim: int) -> str:
         predicate TEXT NOT NULL,
         object_id UUID NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
         metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-        confidence FLOAT NOT NULL DEFAULT 1.0,
+        confidence FLOAT NOT NULL DEFAULT 1.0
+            CHECK (confidence >= 0 AND confidence <= 1),
         source_episode_id UUID REFERENCES episodes(id) ON DELETE SET NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -81,6 +101,10 @@ def get_schema_sql(dim: int) -> str:
     CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations (predicate);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_relations_triple
         ON relations (subject_id, predicate, object_id);
+
+    DROP TRIGGER IF EXISTS trg_relations_updated_at ON relations;
+    CREATE TRIGGER trg_relations_updated_at BEFORE UPDATE ON relations
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
     -- Reflections / Meta-Memory
     CREATE TABLE IF NOT EXISTS reflections (
@@ -110,12 +134,15 @@ def get_schema_sql(dim: int) -> str:
     CREATE TABLE IF NOT EXISTS revision_proposals (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         owner_id TEXT NOT NULL,
-        target_type TEXT NOT NULL,
+        target_type TEXT NOT NULL
+            CHECK (target_type IN ('entity', 'relation')),
         target_id UUID NOT NULL,
-        action TEXT NOT NULL,
+        action TEXT NOT NULL
+            CHECK (action IN ('update', 'delete', 'merge')),
         proposed_changes JSONB NOT NULL,
         reason TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending', 'approved', 'rejected')),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         reviewed_at TIMESTAMPTZ,
         review_notes TEXT
@@ -134,4 +161,5 @@ async def ensure_schema(pool: asyncpg.Pool, settings: Settings) -> None:
     """Create all tables and indexes if they do not already exist."""
     sql = get_schema_sql(settings.embedding_dimensions)
     async with pool.acquire() as conn:
-        await conn.execute(sql)
+        async with conn.transaction():
+            await conn.execute(sql)

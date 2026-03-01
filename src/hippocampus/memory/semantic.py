@@ -12,6 +12,11 @@ from hippocampus.db.models import Entity, Relation
 from hippocampus.embeddings.base import EmbeddingProvider, TaskType
 
 
+def _escape_ilike(text: str) -> str:
+    """Escape ILIKE meta-characters (``%``, ``_``, ``\\``) in *text*."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class SemanticMemory:
     """Knowledge graph: entities and their relations, scoped to an owner."""
 
@@ -98,8 +103,8 @@ class SemanticMemory:
                 )
             return [(Entity.from_row(r), float(r["similarity"])) for r in rows]
 
-        # Text search fallback
-        pattern = f"%{query}%"
+        # Text search fallback — escape ILIKE meta-characters
+        pattern = f"%{_escape_ilike(query)}%"
         if entity_type:
             rows = await self.pool.fetch(
                 """SELECT *, 1.0 AS similarity FROM entities
@@ -206,7 +211,10 @@ class SemanticMemory:
                 parts.append(f"r.subject_id = ${idx}")
             if as_object:
                 parts.append(f"r.object_id = ${idx}")
-            if parts:
+            if not parts:
+                # Both as_subject and as_object are False — treat as no entity filter
+                pass
+            else:
                 conditions.append(f"({' OR '.join(parts)})")
                 params.append(entity_id)
                 idx += 1
@@ -249,35 +257,50 @@ class SemanticMemory:
         entity_id: UUID,
         max_depth: int = 2,
     ) -> list[dict[str, Any]]:
-        """BFS traversal from an entity, returning the connected subgraph."""
+        """BFS traversal from an entity, returning the connected subgraph.
+
+        Tracks visited entity IDs to prevent combinatorial explosion on
+        densely connected graphs.
+        """
+        max_depth = max(1, max_depth)
         rows = await self.pool.fetch(
             """WITH RECURSIVE graph AS (
+                   -- Base case: relations directly touching the start entity
                    SELECT r.id, r.subject_id, r.predicate, r.object_id,
-                          r.confidence, 1 AS depth
+                          r.confidence, 1 AS depth,
+                          ARRAY[r.subject_id, r.object_id] AS visited_entities
                    FROM relations r
                    WHERE r.owner_id = $3
                      AND (r.subject_id = $1 OR r.object_id = $1)
 
                    UNION
 
+                   -- Recursive step: expand from newly discovered entities only
                    SELECT r.id, r.subject_id, r.predicate, r.object_id,
-                          r.confidence, g.depth + 1
+                          r.confidence, g.depth + 1,
+                          g.visited_entities || ARRAY[r.subject_id, r.object_id]
                    FROM relations r
-                   JOIN graph g ON (r.subject_id = g.object_id
-                                    OR r.subject_id = g.subject_id
-                                    OR r.object_id = g.subject_id
-                                    OR r.object_id = g.object_id)
+                   JOIN graph g ON (
+                       r.subject_id = g.object_id
+                       OR r.subject_id = g.subject_id
+                       OR r.object_id = g.subject_id
+                       OR r.object_id = g.object_id
+                   )
                    WHERE r.owner_id = $3
                      AND g.depth < $2
                      AND r.id != g.id
+                     -- Prevent re-traversing through already-visited entities
+                     AND NOT (r.subject_id = ANY(g.visited_entities)
+                              AND r.object_id = ANY(g.visited_entities))
                )
-               SELECT DISTINCT g.*,
+               SELECT DISTINCT ON (g.id) g.id, g.subject_id, g.predicate,
+                      g.object_id, g.confidence, g.depth,
                       s.name AS subject_name, s.entity_type AS subject_type,
                       o.name AS object_name, o.entity_type AS object_type
                FROM graph g
                JOIN entities s ON g.subject_id = s.id
                JOIN entities o ON g.object_id = o.id
-               ORDER BY g.depth, g.confidence DESC""",
+               ORDER BY g.id, g.depth, g.confidence DESC""",
             entity_id,
             max_depth,
             self.owner_id,

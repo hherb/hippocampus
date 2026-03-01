@@ -25,6 +25,8 @@ def _parse_embedding(raw: Any) -> list[float] | None:
     """Convert a pgvector numpy array to a plain list, or return *None*."""
     if raw is None:
         return None
+    if isinstance(raw, list):
+        return raw
     return raw.tolist()
 
 

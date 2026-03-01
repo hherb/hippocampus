@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncpg
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from hippocampus.config import SIMILARITY_PRECISION, settings
 from hippocampus.db.pool import create_pool
@@ -30,11 +30,18 @@ async def lifespan(app: FastAPI):
     """Initialise the database pool, schema, and embedding provider."""
     global _pool, _embedder
     _pool = await create_pool(settings)
-    await ensure_schema(_pool, settings)
-    _embedder = OllamaEmbedding(settings)
-    yield
-    await _pool.close()
-    await _embedder.close()
+    try:
+        await ensure_schema(_pool, settings)
+        _embedder = OllamaEmbedding(settings)
+    except BaseException:
+        await _pool.close()
+        _pool = None
+        raise
+    try:
+        yield
+    finally:
+        await _pool.close()
+        await _embedder.close()
 
 
 app = FastAPI(
@@ -61,8 +68,8 @@ class SearchRequest(BaseModel):
     """Body for semantic episode search."""
 
     query: str
-    limit: int = 10
-    min_similarity: float = 0.0
+    limit: int = Field(10, ge=1, le=100)
+    min_similarity: float = Field(0.0, ge=0.0, le=1.0)
     source: str | None = None
     session_id: str | None = None
 
@@ -74,7 +81,7 @@ class EntityRequest(BaseModel):
     entity_type: str
     description: str | None = None
     metadata: dict[str, Any] | None = None
-    confidence: float = 1.0
+    confidence: float = Field(1.0, ge=0.0, le=1.0)
     source_episode_id: UUID | None = None
 
 
@@ -85,7 +92,7 @@ class RelationRequest(BaseModel):
     predicate: str
     object_id: UUID
     metadata: dict[str, Any] | None = None
-    confidence: float = 1.0
+    confidence: float = Field(1.0, ge=0.0, le=1.0)
     source_episode_id: UUID | None = None
 
 
@@ -101,9 +108,9 @@ class ReflectionRequest(BaseModel):
 class RevisionRequest(BaseModel):
     """Body for proposing a revision."""
 
-    target_type: str
+    target_type: Literal["entity", "relation"]
     target_id: UUID
-    action: str
+    action: Literal["update", "delete", "merge"]
     proposed_changes: dict[str, Any]
     reason: str
 
@@ -378,7 +385,7 @@ async def list_revisions(
     return {"proposals": [p.to_dict() for p in proposals]}
 
 
-@app.put("/api/v1/revisions/{revision_id}/approve")
+@app.post("/api/v1/revisions/{revision_id}/approve")
 async def approve_revision(
     revision_id: UUID,
     owner_id: str = Query(..., description="Owner/tenant identifier"),
@@ -392,7 +399,7 @@ async def approve_revision(
     return proposal.to_dict()
 
 
-@app.put("/api/v1/revisions/{revision_id}/reject")
+@app.post("/api/v1/revisions/{revision_id}/reject")
 async def reject_revision(
     revision_id: UUID,
     owner_id: str = Query(..., description="Owner/tenant identifier"),
@@ -420,7 +427,8 @@ async def stats(
     owner_id: str = Query(..., description="Owner/tenant identifier"),
 ):
     """Return aggregate counts for all memory types."""
-    async with _pool.acquire() as conn:
+    mgr = _get_manager(owner_id)
+    async with mgr.pool.acquire() as conn:
         counts = await conn.fetchrow(
             """SELECT
                    (SELECT count(*) FROM episodes WHERE owner_id = $1) AS episodes,

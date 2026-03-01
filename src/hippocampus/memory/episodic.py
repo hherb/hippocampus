@@ -61,6 +61,10 @@ class EpisodicMemory:
         params: list[Any] = [vec, self.owner_id]
         idx = 3
 
+        if min_similarity > 0.0:
+            conditions.append(f"1 - (embedding <=> $1) >= ${idx}")
+            params.append(min_similarity)
+            idx += 1
         if source is not None:
             conditions.append(f"source = ${idx}")
             params.append(source)
@@ -84,7 +88,6 @@ class EpisodicMemory:
         return [
             (Episode.from_row(row), float(row["similarity"]))
             for row in rows
-            if float(row["similarity"]) >= min_similarity
         ]
 
     async def recall_recent(

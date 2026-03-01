@@ -87,9 +87,9 @@ All settings are via environment variables with `HIPPOCAMPUS_` prefix:
 | `HIPPOCAMPUS_EMBEDDING_MODEL` | `nomic-embed-text-v2-moe` | Ollama embedding model |
 | `HIPPOCAMPUS_EMBEDDING_DIMENSIONS` | `768` | Embedding vector dimensions |
 | `HIPPOCAMPUS_EMBEDDING_PREFIX` | `true` | Use task-type prefixes (nomic models) |
-| `HIPPOCAMPUS_API_HOST` | `0.0.0.0` | REST API bind host |
+| `HIPPOCAMPUS_API_HOST` | `127.0.0.1` | REST API bind host |
 | `HIPPOCAMPUS_API_PORT` | `8420` | REST API port |
-| `HIPPOCAMPUS_MCP_SSE_HOST` | `0.0.0.0` | MCP SSE bind host |
+| `HIPPOCAMPUS_MCP_SSE_HOST` | `127.0.0.1` | MCP SSE bind host |
 | `HIPPOCAMPUS_MCP_SSE_PORT` | `8421` | MCP SSE port |
 | `HIPPOCAMPUS_DEFAULT_OWNER` | `default` | Default owner/tenant for MCP server |
 

@@ -26,4 +26,6 @@ async def create_pool(settings: Settings) -> asyncpg.Pool:
         max_size=settings.db_max_connections,
         init=_init_connection,
     )
+    if pool is None:
+        raise RuntimeError("Failed to create database connection pool")
     return pool

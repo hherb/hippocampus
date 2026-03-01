@@ -30,11 +30,11 @@ class Settings(BaseSettings):
     embedding_request_timeout: float = 120.0
 
     # API server
-    api_host: str = "0.0.0.0"
+    api_host: str = "127.0.0.1"
     api_port: int = 8420
 
     # MCP SSE transport
-    mcp_sse_host: str = "0.0.0.0"
+    mcp_sse_host: str = "127.0.0.1"
     mcp_sse_port: int = 8421
 
     # Multi-tenancy

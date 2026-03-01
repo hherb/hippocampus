@@ -11,6 +11,9 @@ import numpy as np
 from hippocampus.db.models import Reflection, RevisionProposal
 from hippocampus.embeddings.base import EmbeddingProvider, TaskType
 
+VALID_TARGET_TYPES = frozenset({"entity", "relation"})
+VALID_ACTIONS = frozenset({"update", "delete", "merge"})
+
 
 class ReflectionMemory:
     """Meta-memory: reflections, summaries, and human-governed revision proposals."""
@@ -131,7 +134,22 @@ class ReflectionMemory:
         proposed_changes: dict[str, Any],
         reason: str,
     ) -> RevisionProposal:
-        """Create a revision proposal for human review."""
+        """Create a revision proposal for human review.
+
+        Raises:
+            ValueError: If *target_type* or *action* is not a recognised value.
+        """
+        if target_type not in VALID_TARGET_TYPES:
+            raise ValueError(
+                f"Invalid target_type '{target_type}'; "
+                f"must be one of {sorted(VALID_TARGET_TYPES)}"
+            )
+        if action not in VALID_ACTIONS:
+            raise ValueError(
+                f"Invalid action '{action}'; "
+                f"must be one of {sorted(VALID_ACTIONS)}"
+            )
+
         row = await self.pool.fetchrow(
             """INSERT INTO revision_proposals
                    (owner_id, target_type, target_id, action,
@@ -205,7 +223,12 @@ class ReflectionMemory:
     async def _apply_revision(
         self, conn: asyncpg.Connection, proposal: RevisionProposal
     ) -> None:
-        """Execute the changes described by an approved proposal."""
+        """Execute the changes described by an approved proposal.
+
+        Raises:
+            ValueError: If the proposal has an unrecognised action/target_type
+                combination.
+        """
         changes = proposal.proposed_changes
 
         if proposal.action == "delete":
@@ -234,16 +257,18 @@ class ReflectionMemory:
                 # Re-embed if name or description changed
                 if "name" in changes or "description" in changes:
                     entity = await conn.fetchrow(
-                        "SELECT name, description FROM entities WHERE id = $1",
+                        "SELECT name, description FROM entities WHERE id = $1 AND owner_id = $2",
                         proposal.target_id,
+                        self.owner_id,
                     )
                     if entity:
                         text = f"{entity['name']}: {entity['description']}" if entity["description"] else entity["name"]
                         emb = await self.embedder.embed_one(text, TaskType.DOCUMENT)
                         await conn.execute(
-                            "UPDATE entities SET embedding = $2 WHERE id = $1",
+                            "UPDATE entities SET embedding = $2 WHERE id = $1 AND owner_id = $3",
                             proposal.target_id,
                             np.array(emb, dtype=np.float32),
+                            self.owner_id,
                         )
 
         elif proposal.action == "update" and proposal.target_type == "relation":
@@ -266,7 +291,48 @@ class ReflectionMemory:
             merge_into = changes.get("merge_into_id")
             if merge_into:
                 target = UUID(merge_into) if isinstance(merge_into, str) else merge_into
-                # Re-point all relations from the old entity to the merge target
+
+                # Delete relations that would become self-loops after merge
+                await conn.execute(
+                    """DELETE FROM relations
+                       WHERE owner_id = $3
+                         AND ((subject_id = $1 AND object_id = $2)
+                              OR (subject_id = $2 AND object_id = $1))""",
+                    proposal.target_id,
+                    target,
+                    self.owner_id,
+                )
+
+                # Delete relations that would duplicate existing ones after re-pointing.
+                # A relation (old_entity, pred, obj) conflicts if (target, pred, obj) exists.
+                await conn.execute(
+                    """DELETE FROM relations r1
+                       WHERE r1.owner_id = $3 AND r1.subject_id = $1
+                         AND EXISTS (
+                             SELECT 1 FROM relations r2
+                             WHERE r2.subject_id = $2
+                               AND r2.predicate = r1.predicate
+                               AND r2.object_id = r1.object_id
+                         )""",
+                    proposal.target_id,
+                    target,
+                    self.owner_id,
+                )
+                await conn.execute(
+                    """DELETE FROM relations r1
+                       WHERE r1.owner_id = $3 AND r1.object_id = $1
+                         AND EXISTS (
+                             SELECT 1 FROM relations r2
+                             WHERE r2.object_id = $2
+                               AND r2.predicate = r1.predicate
+                               AND r2.subject_id = r1.subject_id
+                         )""",
+                    proposal.target_id,
+                    target,
+                    self.owner_id,
+                )
+
+                # Re-point remaining relations from old entity to merge target
                 await conn.execute(
                     """UPDATE relations SET subject_id = $2, updated_at = NOW()
                        WHERE subject_id = $1 AND owner_id = $3""",
@@ -281,8 +347,15 @@ class ReflectionMemory:
                     target,
                     self.owner_id,
                 )
+                # Delete the old entity
                 await conn.execute(
                     "DELETE FROM entities WHERE id = $1 AND owner_id = $2",
                     proposal.target_id,
                     self.owner_id,
                 )
+
+        else:
+            raise ValueError(
+                f"Unrecognised revision: action={proposal.action!r}, "
+                f"target_type={proposal.target_type!r}"
+            )
