@@ -13,9 +13,12 @@ from hippocampus.embeddings.base import EmbeddingProvider, TaskType
 class ReflectionMemory:
     """Meta-memory: reflections, summaries, and human-governed revision proposals."""
 
-    def __init__(self, pool: asyncpg.Pool, embedder: EmbeddingProvider) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, embedder: EmbeddingProvider, owner_id: str
+    ) -> None:
         self.pool = pool
         self.embedder = embedder
+        self.owner_id = owner_id
 
     # ── Reflections ─────────────────────────────────────────────────────
 
@@ -32,9 +35,10 @@ class ReflectionMemory:
             async with conn.transaction():
                 row = await conn.fetchrow(
                     """INSERT INTO reflections
-                           (content, reflection_type, embedding, metadata)
-                       VALUES ($1, $2, $3, $4)
+                           (owner_id, content, reflection_type, embedding, metadata)
+                       VALUES ($1, $2, $3, $4, $5)
                        RETURNING *""",
+                    self.owner_id,
                     content,
                     reflection_type,
                     np.array(embedding, dtype=np.float32),
@@ -66,22 +70,25 @@ class ReflectionMemory:
             rows = await self.pool.fetch(
                 """SELECT *, 1 - (embedding <=> $1) AS similarity
                    FROM reflections
-                   WHERE embedding IS NOT NULL AND reflection_type = $3
+                   WHERE embedding IS NOT NULL
+                     AND owner_id = $3 AND reflection_type = $4
                    ORDER BY embedding <=> $1
                    LIMIT $2""",
                 vec,
                 limit,
+                self.owner_id,
                 reflection_type,
             )
         else:
             rows = await self.pool.fetch(
                 """SELECT *, 1 - (embedding <=> $1) AS similarity
                    FROM reflections
-                   WHERE embedding IS NOT NULL
+                   WHERE embedding IS NOT NULL AND owner_id = $3
                    ORDER BY embedding <=> $1
                    LIMIT $2""",
                 vec,
                 limit,
+                self.owner_id,
             )
         return [(Reflection.from_row(r), float(r["similarity"])) for r in rows]
 
@@ -93,14 +100,18 @@ class ReflectionMemory:
         if reflection_type:
             rows = await self.pool.fetch(
                 """SELECT * FROM reflections
-                   WHERE reflection_type = $1
-                   ORDER BY created_at DESC LIMIT $2""",
+                   WHERE owner_id = $1 AND reflection_type = $2
+                   ORDER BY created_at DESC LIMIT $3""",
+                self.owner_id,
                 reflection_type,
                 limit,
             )
         else:
             rows = await self.pool.fetch(
-                "SELECT * FROM reflections ORDER BY created_at DESC LIMIT $1",
+                """SELECT * FROM reflections
+                   WHERE owner_id = $1
+                   ORDER BY created_at DESC LIMIT $2""",
+                self.owner_id,
                 limit,
             )
         return [Reflection.from_row(r) for r in rows]
@@ -117,9 +128,11 @@ class ReflectionMemory:
     ) -> RevisionProposal:
         row = await self.pool.fetchrow(
             """INSERT INTO revision_proposals
-                   (target_type, target_id, action, proposed_changes, reason)
-               VALUES ($1, $2, $3, $4, $5)
+                   (owner_id, target_type, target_id, action,
+                    proposed_changes, reason)
+               VALUES ($1, $2, $3, $4, $5, $6)
                RETURNING *""",
+            self.owner_id,
             target_type,
             target_id,
             action,
@@ -135,8 +148,9 @@ class ReflectionMemory:
     ) -> list[RevisionProposal]:
         rows = await self.pool.fetch(
             """SELECT * FROM revision_proposals
-               WHERE status = $1
-               ORDER BY created_at DESC LIMIT $2""",
+               WHERE owner_id = $1 AND status = $2
+               ORDER BY created_at DESC LIMIT $3""",
+            self.owner_id,
             status,
             limit,
         )
@@ -151,10 +165,11 @@ class ReflectionMemory:
                 row = await conn.fetchrow(
                     """UPDATE revision_proposals
                        SET status = 'approved', reviewed_at = NOW(),
-                           review_notes = $2
-                       WHERE id = $1 AND status = 'pending'
+                           review_notes = $3
+                       WHERE id = $1 AND owner_id = $2 AND status = 'pending'
                        RETURNING *""",
                     revision_id,
+                    self.owner_id,
                     review_notes,
                 )
                 if row is None:
@@ -170,10 +185,11 @@ class ReflectionMemory:
         row = await self.pool.fetchrow(
             """UPDATE revision_proposals
                SET status = 'rejected', reviewed_at = NOW(),
-                   review_notes = $2
-               WHERE id = $1 AND status = 'pending'
+                   review_notes = $3
+               WHERE id = $1 AND owner_id = $2 AND status = 'pending'
                RETURNING *""",
             revision_id,
+            self.owner_id,
             review_notes,
         )
         return RevisionProposal.from_row(row) if row else None
@@ -186,13 +202,15 @@ class ReflectionMemory:
         if proposal.action == "delete":
             table = "entities" if proposal.target_type == "entity" else "relations"
             await conn.execute(
-                f"DELETE FROM {table} WHERE id = $1", proposal.target_id
+                f"DELETE FROM {table} WHERE id = $1 AND owner_id = $2",
+                proposal.target_id,
+                self.owner_id,
             )
 
         elif proposal.action == "update" and proposal.target_type == "entity":
             sets = []
-            params: list[Any] = [proposal.target_id]
-            idx = 2
+            params: list[Any] = [proposal.target_id, self.owner_id]
+            idx = 3
             for field in ("name", "description", "entity_type", "confidence"):
                 if field in changes:
                     sets.append(f"{field} = ${idx}")
@@ -201,7 +219,7 @@ class ReflectionMemory:
             if sets:
                 sets.append("updated_at = NOW()")
                 await conn.execute(
-                    f"UPDATE entities SET {', '.join(sets)} WHERE id = $1",
+                    f"UPDATE entities SET {', '.join(sets)} WHERE id = $1 AND owner_id = $2",
                     *params,
                 )
                 # Re-embed if name or description changed
@@ -221,8 +239,8 @@ class ReflectionMemory:
 
         elif proposal.action == "update" and proposal.target_type == "relation":
             sets = []
-            params_r: list[Any] = [proposal.target_id]
-            idx = 2
+            params_r: list[Any] = [proposal.target_id, self.owner_id]
+            idx = 3
             for field in ("predicate", "confidence"):
                 if field in changes:
                     sets.append(f"{field} = ${idx}")
@@ -231,7 +249,7 @@ class ReflectionMemory:
             if sets:
                 sets.append("updated_at = NOW()")
                 await conn.execute(
-                    f"UPDATE relations SET {', '.join(sets)} WHERE id = $1",
+                    f"UPDATE relations SET {', '.join(sets)} WHERE id = $1 AND owner_id = $2",
                     *params_r,
                 )
 
@@ -243,15 +261,21 @@ class ReflectionMemory:
                 target = _UUID(merge_into) if isinstance(merge_into, str) else merge_into
                 # Re-point all relations from the old entity to the merge target
                 await conn.execute(
-                    "UPDATE relations SET subject_id = $2, updated_at = NOW() WHERE subject_id = $1",
+                    """UPDATE relations SET subject_id = $2, updated_at = NOW()
+                       WHERE subject_id = $1 AND owner_id = $3""",
                     proposal.target_id,
                     target,
+                    self.owner_id,
                 )
                 await conn.execute(
-                    "UPDATE relations SET object_id = $2, updated_at = NOW() WHERE object_id = $1",
+                    """UPDATE relations SET object_id = $2, updated_at = NOW()
+                       WHERE object_id = $1 AND owner_id = $3""",
                     proposal.target_id,
                     target,
+                    self.owner_id,
                 )
                 await conn.execute(
-                    "DELETE FROM entities WHERE id = $1", proposal.target_id
+                    "DELETE FROM entities WHERE id = $1 AND owner_id = $2",
+                    proposal.target_id,
+                    self.owner_id,
                 )

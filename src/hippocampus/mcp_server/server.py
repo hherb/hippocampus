@@ -15,6 +15,9 @@ from hippocampus.memory import MemoryManager
 _manager: MemoryManager | None = None
 _embedder: OllamaEmbedding | None = None
 
+# Set at startup; overridable via CLI --owner or HIPPOCAMPUS_DEFAULT_OWNER
+_owner_id: str = settings.default_owner
+
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
@@ -22,7 +25,7 @@ async def lifespan(server: FastMCP):
     pool = await create_pool(settings)
     await ensure_schema(pool, settings)
     _embedder = OllamaEmbedding(settings)
-    _manager = MemoryManager(pool, _embedder)
+    _manager = MemoryManager(pool, _embedder, _owner_id)
     try:
         yield
     finally:
@@ -371,11 +374,17 @@ async def pending_revisions(limit: int = 20) -> str:
     return _json({"proposals": [p.to_dict() for p in proposals]})
 
 
-def run_stdio() -> None:
+def run_stdio(owner_id: str | None = None) -> None:
+    global _owner_id
+    if owner_id:
+        _owner_id = owner_id
     mcp.run(transport="stdio")
 
 
-def run_sse() -> None:
+def run_sse(owner_id: str | None = None) -> None:
+    global _owner_id
+    if owner_id:
+        _owner_id = owner_id
     mcp.run(
         transport="sse",
         sse_params={

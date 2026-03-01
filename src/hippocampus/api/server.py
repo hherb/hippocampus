@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import asyncpg as _asyncpg
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
@@ -14,19 +14,23 @@ from hippocampus.db.schema import ensure_schema
 from hippocampus.embeddings.ollama import OllamaEmbedding
 from hippocampus.memory import MemoryManager
 
-_manager: MemoryManager | None = None
+_pool: _asyncpg.Pool | None = None
 _embedder: OllamaEmbedding | None = None
+
+
+def _get_manager(owner_id: str) -> MemoryManager:
+    """Create a MemoryManager scoped to the given owner."""
+    return MemoryManager(_pool, _embedder, owner_id)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _manager, _embedder
-    pool = await create_pool(settings)
-    await ensure_schema(pool, settings)
+    global _pool, _embedder
+    _pool = await create_pool(settings)
+    await ensure_schema(_pool, settings)
     _embedder = OllamaEmbedding(settings)
-    _manager = MemoryManager(pool, _embedder)
     yield
-    await pool.close()
+    await _pool.close()
     await _embedder.close()
 
 
@@ -97,16 +101,24 @@ class ReviewRequest(BaseModel):
 
 
 @app.post("/api/v1/episodes")
-async def store_episode(req: StoreEpisodeRequest):
-    episode = await _manager.episodic.store(
+async def store_episode(
+    req: StoreEpisodeRequest,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    episode = await mgr.episodic.store(
         req.content, req.source, req.session_id, req.metadata
     )
     return episode.to_dict()
 
 
 @app.post("/api/v1/episodes/search")
-async def search_episodes(req: SearchRequest):
-    results = await _manager.episodic.recall(
+async def search_episodes(
+    req: SearchRequest,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    results = await mgr.episodic.recall(
         req.query, req.limit, req.min_similarity, req.source, req.session_id
     )
     return {
@@ -119,24 +131,34 @@ async def search_episodes(req: SearchRequest):
 
 @app.get("/api/v1/episodes/recent")
 async def recent_episodes(
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
     limit: int = Query(10, ge=1, le=100),
     session_id: str | None = Query(None),
 ):
-    episodes = await _manager.episodic.recall_recent(limit, session_id)
+    mgr = _get_manager(owner_id)
+    episodes = await mgr.episodic.recall_recent(limit, session_id)
     return {"episodes": [ep.to_dict() for ep in episodes]}
 
 
 @app.get("/api/v1/episodes/{episode_id}")
-async def get_episode(episode_id: UUID):
-    episode = await _manager.episodic.get(episode_id)
+async def get_episode(
+    episode_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    episode = await mgr.episodic.get(episode_id)
     if episode is None:
         raise HTTPException(404, "Episode not found")
     return episode.to_dict()
 
 
 @app.delete("/api/v1/episodes/{episode_id}")
-async def delete_episode(episode_id: UUID):
-    deleted = await _manager.episodic.delete(episode_id)
+async def delete_episode(
+    episode_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    deleted = await mgr.episodic.delete(episode_id)
     if not deleted:
         raise HTTPException(404, "Episode not found")
     return {"deleted": True}
@@ -146,8 +168,12 @@ async def delete_episode(episode_id: UUID):
 
 
 @app.post("/api/v1/entities")
-async def create_entity(req: EntityRequest):
-    entity = await _manager.semantic.add_entity(
+async def create_entity(
+    req: EntityRequest,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    entity = await mgr.semantic.add_entity(
         req.name,
         req.entity_type,
         req.description,
@@ -160,12 +186,14 @@ async def create_entity(req: EntityRequest):
 
 @app.post("/api/v1/entities/search")
 async def search_entities(
-    query: str,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+    query: str = Query(...),
     entity_type: str | None = Query(None),
     limit: int = Query(10, ge=1, le=100),
     semantic: bool = Query(True),
 ):
-    results = await _manager.semantic.find_entities(
+    mgr = _get_manager(owner_id)
+    results = await mgr.semantic.find_entities(
         query, entity_type, limit, semantic
     )
     return {
@@ -177,16 +205,24 @@ async def search_entities(
 
 
 @app.get("/api/v1/entities/{entity_id}")
-async def get_entity(entity_id: UUID):
-    entity = await _manager.semantic.get_entity(entity_id)
+async def get_entity(
+    entity_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    entity = await mgr.semantic.get_entity(entity_id)
     if entity is None:
         raise HTTPException(404, "Entity not found")
     return entity.to_dict()
 
 
 @app.delete("/api/v1/entities/{entity_id}")
-async def delete_entity(entity_id: UUID):
-    deleted = await _manager.semantic.delete_entity(entity_id)
+async def delete_entity(
+    entity_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    deleted = await mgr.semantic.delete_entity(entity_id)
     if not deleted:
         raise HTTPException(404, "Entity not found")
     return {"deleted": True}
@@ -196,8 +232,12 @@ async def delete_entity(entity_id: UUID):
 
 
 @app.post("/api/v1/relations")
-async def create_relation(req: RelationRequest):
-    relation = await _manager.semantic.add_relation(
+async def create_relation(
+    req: RelationRequest,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    relation = await mgr.semantic.add_relation(
         req.subject_id,
         req.predicate,
         req.object_id,
@@ -210,30 +250,41 @@ async def create_relation(req: RelationRequest):
 
 @app.get("/api/v1/relations")
 async def list_relations(
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
     entity_id: UUID | None = Query(None),
     predicate: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
 ):
-    relations = await _manager.semantic.get_relations(
+    mgr = _get_manager(owner_id)
+    relations = await mgr.semantic.get_relations(
         entity_id=entity_id, predicate=predicate, limit=limit
     )
     return {"relations": [r.to_dict() for r in relations]}
 
 
 @app.delete("/api/v1/relations/{relation_id}")
-async def delete_relation(relation_id: UUID):
-    deleted = await _manager.semantic.delete_relation(relation_id)
+async def delete_relation(
+    relation_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    deleted = await mgr.semantic.delete_relation(relation_id)
     if not deleted:
         raise HTTPException(404, "Relation not found")
     return {"deleted": True}
 
 
 @app.get("/api/v1/entities/{entity_id}/graph")
-async def entity_graph(entity_id: UUID, max_depth: int = Query(2, ge=1, le=3)):
-    entity = await _manager.semantic.get_entity(entity_id)
+async def entity_graph(
+    entity_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+    max_depth: int = Query(2, ge=1, le=3),
+):
+    mgr = _get_manager(owner_id)
+    entity = await mgr.semantic.get_entity(entity_id)
     if entity is None:
         raise HTTPException(404, "Entity not found")
-    subgraph = await _manager.semantic.traverse(entity_id, max_depth)
+    subgraph = await mgr.semantic.traverse(entity_id, max_depth)
     return {"entity": entity.to_dict(), "connections": subgraph}
 
 
@@ -241,8 +292,12 @@ async def entity_graph(entity_id: UUID, max_depth: int = Query(2, ge=1, le=3)):
 
 
 @app.post("/api/v1/reflections")
-async def create_reflection(req: ReflectionRequest):
-    reflection = await _manager.reflection.create(
+async def create_reflection(
+    req: ReflectionRequest,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    reflection = await mgr.reflection.create(
         req.content, req.reflection_type, req.source_episode_ids, req.metadata
     )
     return reflection.to_dict()
@@ -250,11 +305,13 @@ async def create_reflection(req: ReflectionRequest):
 
 @app.post("/api/v1/reflections/search")
 async def search_reflections(
-    query: str,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+    query: str = Query(...),
     reflection_type: str | None = Query(None),
     limit: int = Query(10, ge=1, le=100),
 ):
-    results = await _manager.reflection.search(query, reflection_type, limit)
+    mgr = _get_manager(owner_id)
+    results = await mgr.reflection.search(query, reflection_type, limit)
     return {
         "reflections": [
             {"reflection": ref.to_dict(), "similarity": round(sim, 4)}
@@ -265,10 +322,12 @@ async def search_reflections(
 
 @app.get("/api/v1/reflections")
 async def list_reflections(
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
     reflection_type: str | None = Query(None),
     limit: int = Query(10, ge=1, le=100),
 ):
-    reflections = await _manager.reflection.list_recent(reflection_type, limit)
+    mgr = _get_manager(owner_id)
+    reflections = await mgr.reflection.list_recent(reflection_type, limit)
     return {"reflections": [r.to_dict() for r in reflections]}
 
 
@@ -276,8 +335,12 @@ async def list_reflections(
 
 
 @app.post("/api/v1/revisions")
-async def create_revision(req: RevisionRequest):
-    proposal = await _manager.reflection.propose_revision(
+async def create_revision(
+    req: RevisionRequest,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    proposal = await mgr.reflection.propose_revision(
         req.target_type,
         req.target_id,
         req.action,
@@ -289,26 +352,38 @@ async def create_revision(req: RevisionRequest):
 
 @app.get("/api/v1/revisions")
 async def list_revisions(
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
     status: str = Query("pending"),
     limit: int = Query(50, ge=1, le=200),
 ):
-    proposals = await _manager.reflection.list_revisions(status, limit)
+    mgr = _get_manager(owner_id)
+    proposals = await mgr.reflection.list_revisions(status, limit)
     return {"proposals": [p.to_dict() for p in proposals]}
 
 
 @app.put("/api/v1/revisions/{revision_id}/approve")
-async def approve_revision(revision_id: UUID, req: ReviewRequest | None = None):
+async def approve_revision(
+    revision_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+    req: ReviewRequest | None = None,
+):
+    mgr = _get_manager(owner_id)
     notes = req.review_notes if req else None
-    proposal = await _manager.reflection.approve_revision(revision_id, notes)
+    proposal = await mgr.reflection.approve_revision(revision_id, notes)
     if proposal is None:
         raise HTTPException(404, "Pending revision not found")
     return proposal.to_dict()
 
 
 @app.put("/api/v1/revisions/{revision_id}/reject")
-async def reject_revision(revision_id: UUID, req: ReviewRequest | None = None):
+async def reject_revision(
+    revision_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+    req: ReviewRequest | None = None,
+):
+    mgr = _get_manager(owner_id)
     notes = req.review_notes if req else None
-    proposal = await _manager.reflection.reject_revision(revision_id, notes)
+    proposal = await mgr.reflection.reject_revision(revision_id, notes)
     if proposal is None:
         raise HTTPException(404, "Pending revision not found")
     return proposal.to_dict()
@@ -323,16 +398,19 @@ async def health():
 
 
 @app.get("/api/v1/stats")
-async def stats():
-    async with _manager.pool.acquire() as conn:
+async def stats(
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    async with _pool.acquire() as conn:
         counts = await conn.fetchrow(
             """SELECT
-                   (SELECT count(*) FROM episodes) AS episodes,
-                   (SELECT count(*) FROM entities) AS entities,
-                   (SELECT count(*) FROM relations) AS relations,
-                   (SELECT count(*) FROM reflections) AS reflections,
+                   (SELECT count(*) FROM episodes WHERE owner_id = $1) AS episodes,
+                   (SELECT count(*) FROM entities WHERE owner_id = $1) AS entities,
+                   (SELECT count(*) FROM relations WHERE owner_id = $1) AS relations,
+                   (SELECT count(*) FROM reflections WHERE owner_id = $1) AS reflections,
                    (SELECT count(*) FROM revision_proposals
-                    WHERE status = 'pending') AS pending_revisions"""
+                    WHERE owner_id = $1 AND status = 'pending') AS pending_revisions""",
+            owner_id,
         )
     return dict(counts)
 

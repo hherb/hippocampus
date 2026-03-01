@@ -13,13 +13,18 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command")
 
-    # hippocampus mcp [--transport stdio|sse]
+    # hippocampus mcp [--transport stdio|sse] [--owner OWNER]
     mcp_cmd = sub.add_parser("mcp", help="Run the MCP server")
     mcp_cmd.add_argument(
         "--transport",
         choices=["stdio", "sse"],
         default="stdio",
         help="MCP transport (default: stdio)",
+    )
+    mcp_cmd.add_argument(
+        "--owner",
+        default=None,
+        help="Owner/tenant ID for this MCP instance (default: HIPPOCAMPUS_DEFAULT_OWNER or 'default')",
     )
 
     # hippocampus api
@@ -34,9 +39,9 @@ def main() -> None:
         from hippocampus.mcp_server.server import run_sse, run_stdio
 
         if args.transport == "sse":
-            run_sse()
+            run_sse(owner_id=args.owner)
         else:
-            run_stdio()
+            run_stdio(owner_id=args.owner)
 
     elif args.command == "api":
         from hippocampus.api.server import run_api

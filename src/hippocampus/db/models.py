@@ -10,6 +10,7 @@ from uuid import UUID
 @dataclass
 class Episode:
     id: UUID
+    owner_id: str
     source: str
     content: str
     created_at: datetime
@@ -22,6 +23,7 @@ class Episode:
     def from_row(cls, row) -> Episode:
         return cls(
             id=row["id"],
+            owner_id=row["owner_id"],
             source=row["source"],
             content=row["content"],
             created_at=row["created_at"],
@@ -34,6 +36,7 @@ class Episode:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": str(self.id),
+            "owner_id": self.owner_id,
             "source": self.source,
             "content": self.content,
             "session_id": self.session_id,
@@ -46,6 +49,7 @@ class Episode:
 @dataclass
 class Entity:
     id: UUID
+    owner_id: str
     name: str
     entity_type: str
     created_at: datetime
@@ -60,6 +64,7 @@ class Entity:
     def from_row(cls, row) -> Entity:
         return cls(
             id=row["id"],
+            owner_id=row["owner_id"],
             name=row["name"],
             entity_type=row["entity_type"],
             description=row["description"],
@@ -74,6 +79,7 @@ class Entity:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": str(self.id),
+            "owner_id": self.owner_id,
             "name": self.name,
             "entity_type": self.entity_type,
             "description": self.description,
@@ -88,6 +94,7 @@ class Entity:
 @dataclass
 class Relation:
     id: UUID
+    owner_id: str
     subject_id: UUID
     predicate: str
     object_id: UUID
@@ -104,6 +111,7 @@ class Relation:
     def from_row(cls, row) -> Relation:
         return cls(
             id=row["id"],
+            owner_id=row["owner_id"],
             subject_id=row["subject_id"],
             predicate=row["predicate"],
             object_id=row["object_id"],
@@ -119,6 +127,7 @@ class Relation:
     def to_dict(self) -> dict[str, Any]:
         d = {
             "id": str(self.id),
+            "owner_id": self.owner_id,
             "subject_id": str(self.subject_id),
             "predicate": self.predicate,
             "object_id": str(self.object_id),
@@ -138,6 +147,7 @@ class Relation:
 @dataclass
 class Reflection:
     id: UUID
+    owner_id: str
     content: str
     reflection_type: str
     created_at: datetime
@@ -149,6 +159,7 @@ class Reflection:
     def from_row(cls, row) -> Reflection:
         return cls(
             id=row["id"],
+            owner_id=row["owner_id"],
             content=row["content"],
             reflection_type=row["reflection_type"],
             created_at=row["created_at"],
@@ -159,6 +170,7 @@ class Reflection:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": str(self.id),
+            "owner_id": self.owner_id,
             "content": self.content,
             "reflection_type": self.reflection_type,
             "metadata": self.metadata,
@@ -170,6 +182,7 @@ class Reflection:
 @dataclass
 class RevisionProposal:
     id: UUID
+    owner_id: str
     target_type: str
     target_id: UUID
     action: str
@@ -184,6 +197,7 @@ class RevisionProposal:
     def from_row(cls, row) -> RevisionProposal:
         return cls(
             id=row["id"],
+            owner_id=row["owner_id"],
             target_type=row["target_type"],
             target_id=row["target_id"],
             action=row["action"],
@@ -202,6 +216,7 @@ class RevisionProposal:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": str(self.id),
+            "owner_id": self.owner_id,
             "target_type": self.target_type,
             "target_id": str(self.target_id),
             "action": self.action,

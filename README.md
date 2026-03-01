@@ -66,10 +66,13 @@ hippocampus init-db
 # 5a. Run the MCP server (stdio — for Claude Desktop / Claude Code)
 hippocampus mcp
 
-# 5b. Run the MCP server (SSE — for remote clients)
+# 5b. Run the MCP server for a specific owner/agent
+hippocampus mcp --owner agent-alice
+
+# 5c. Run the MCP server (SSE — for remote clients)
 hippocampus mcp --transport sse
 
-# 5c. Run the REST API
+# 5d. Run the REST API (serves all owners; owner_id is a query parameter)
 hippocampus api
 ```
 
@@ -88,6 +91,7 @@ All settings are via environment variables with `HIPPOCAMPUS_` prefix:
 | `HIPPOCAMPUS_API_PORT` | `8420` | REST API port |
 | `HIPPOCAMPUS_MCP_SSE_HOST` | `0.0.0.0` | MCP SSE bind host |
 | `HIPPOCAMPUS_MCP_SSE_PORT` | `8421` | MCP SSE port |
+| `HIPPOCAMPUS_DEFAULT_OWNER` | `default` | Default owner/tenant for MCP server |
 
 ## MCP Tools
 
@@ -113,10 +117,23 @@ When connected via MCP, the LLM has access to these tools:
 - **`propose_revision`** — propose a knowledge graph change for human review
 - **`pending_revisions`** — list proposals awaiting approval
 
+## Multi-tenancy
+
+Hippocampus supports multiple isolated memory spaces. Each owner (user, agent,
+organization) has completely separate episodic memories, knowledge graphs,
+reflections, and revision proposals.
+
+- **MCP server**: Each instance serves one owner, set via `--owner` flag or
+  `HIPPOCAMPUS_DEFAULT_OWNER` env var. Run multiple instances for multiple
+  owners.
+- **REST API**: A single instance serves all owners. Every endpoint requires an
+  `owner_id` query parameter for tenant isolation.
+
 ## REST API
 
 Full REST API available at `http://localhost:8420/docs` (Swagger UI) when
-running `hippocampus api`.
+running `hippocampus api`. All endpoints require `?owner_id=<id>` for tenant
+scoping.
 
 ## Claude Desktop Configuration
 
@@ -127,7 +144,7 @@ Add to your `claude_desktop_config.json`:
   "mcpServers": {
     "hippocampus": {
       "command": "hippocampus",
-      "args": ["mcp"]
+      "args": ["mcp", "--owner", "my-agent"]
     }
   }
 }

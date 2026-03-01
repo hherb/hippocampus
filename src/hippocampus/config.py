@@ -23,5 +23,8 @@ class Settings(BaseSettings):
     mcp_sse_host: str = "0.0.0.0"
     mcp_sse_port: int = 8421
 
+    # Multi-tenancy
+    default_owner: str = "default"
+
 
 settings = Settings()

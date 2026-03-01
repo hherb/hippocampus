@@ -9,11 +9,14 @@ from hippocampus.memory.reflection import ReflectionMemory
 
 
 class MemoryManager:
-    """Facade that holds all three memory subsystems."""
+    """Facade that holds all three memory subsystems, scoped to an owner."""
 
-    def __init__(self, pool: asyncpg.Pool, embedder: EmbeddingProvider) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, embedder: EmbeddingProvider, owner_id: str
+    ) -> None:
         self.pool = pool
         self.embedder = embedder
-        self.episodic = EpisodicMemory(pool, embedder)
-        self.semantic = SemanticMemory(pool, embedder)
-        self.reflection = ReflectionMemory(pool, embedder)
+        self.owner_id = owner_id
+        self.episodic = EpisodicMemory(pool, embedder, owner_id)
+        self.semantic = SemanticMemory(pool, embedder, owner_id)
+        self.reflection = ReflectionMemory(pool, embedder, owner_id)

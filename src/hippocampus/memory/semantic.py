@@ -11,11 +11,14 @@ from hippocampus.embeddings.base import EmbeddingProvider, TaskType
 
 
 class SemanticMemory:
-    """Knowledge graph: entities and their relations."""
+    """Knowledge graph: entities and their relations, scoped to an owner."""
 
-    def __init__(self, pool: asyncpg.Pool, embedder: EmbeddingProvider) -> None:
+    def __init__(
+        self, pool: asyncpg.Pool, embedder: EmbeddingProvider, owner_id: str
+    ) -> None:
         self.pool = pool
         self.embedder = embedder
+        self.owner_id = owner_id
 
     # ── Entities ────────────────────────────────────────────────────────
 
@@ -33,16 +36,17 @@ class SemanticMemory:
 
         row = await self.pool.fetchrow(
             """INSERT INTO entities
-                   (name, entity_type, description, embedding, metadata,
-                    confidence, source_episode_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
-               ON CONFLICT (name, entity_type) DO UPDATE SET
+                   (owner_id, name, entity_type, description, embedding,
+                    metadata, confidence, source_episode_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (owner_id, name, entity_type) DO UPDATE SET
                    description = COALESCE(EXCLUDED.description, entities.description),
                    embedding = EXCLUDED.embedding,
                    metadata = entities.metadata || EXCLUDED.metadata,
                    confidence = GREATEST(entities.confidence, EXCLUDED.confidence),
                    updated_at = NOW()
                RETURNING *""",
+            self.owner_id,
             name,
             entity_type,
             description,
@@ -68,22 +72,25 @@ class SemanticMemory:
                 rows = await self.pool.fetch(
                     """SELECT *, 1 - (embedding <=> $1) AS similarity
                        FROM entities
-                       WHERE embedding IS NOT NULL AND entity_type = $3
+                       WHERE embedding IS NOT NULL
+                         AND owner_id = $3 AND entity_type = $4
                        ORDER BY embedding <=> $1
                        LIMIT $2""",
                     vec,
                     limit,
+                    self.owner_id,
                     entity_type,
                 )
             else:
                 rows = await self.pool.fetch(
                     """SELECT *, 1 - (embedding <=> $1) AS similarity
                        FROM entities
-                       WHERE embedding IS NOT NULL
+                       WHERE embedding IS NOT NULL AND owner_id = $3
                        ORDER BY embedding <=> $1
                        LIMIT $2""",
                     vec,
                     limit,
+                    self.owner_id,
                 )
             return [(Entity.from_row(r), float(r["similarity"])) for r in rows]
 
@@ -92,26 +99,32 @@ class SemanticMemory:
         if entity_type:
             rows = await self.pool.fetch(
                 """SELECT *, 1.0 AS similarity FROM entities
-                   WHERE (name ILIKE $1 OR description ILIKE $1)
-                     AND entity_type = $3
+                   WHERE owner_id = $3
+                     AND (name ILIKE $1 OR description ILIKE $1)
+                     AND entity_type = $4
                    LIMIT $2""",
                 pattern,
                 limit,
+                self.owner_id,
                 entity_type,
             )
         else:
             rows = await self.pool.fetch(
                 """SELECT *, 1.0 AS similarity FROM entities
-                   WHERE name ILIKE $1 OR description ILIKE $1
+                   WHERE owner_id = $3
+                     AND (name ILIKE $1 OR description ILIKE $1)
                    LIMIT $2""",
                 pattern,
                 limit,
+                self.owner_id,
             )
         return [(Entity.from_row(r), float(r["similarity"])) for r in rows]
 
     async def get_entity(self, entity_id: UUID) -> Entity | None:
         row = await self.pool.fetchrow(
-            "SELECT * FROM entities WHERE id = $1", entity_id
+            "SELECT * FROM entities WHERE id = $1 AND owner_id = $2",
+            entity_id,
+            self.owner_id,
         )
         return Entity.from_row(row) if row else None
 
@@ -119,7 +132,9 @@ class SemanticMemory:
         self, name: str, entity_type: str
     ) -> Entity | None:
         row = await self.pool.fetchrow(
-            "SELECT * FROM entities WHERE name = $1 AND entity_type = $2",
+            """SELECT * FROM entities
+               WHERE owner_id = $1 AND name = $2 AND entity_type = $3""",
+            self.owner_id,
             name,
             entity_type,
         )
@@ -127,7 +142,9 @@ class SemanticMemory:
 
     async def delete_entity(self, entity_id: UUID) -> bool:
         result = await self.pool.execute(
-            "DELETE FROM entities WHERE id = $1", entity_id
+            "DELETE FROM entities WHERE id = $1 AND owner_id = $2",
+            entity_id,
+            self.owner_id,
         )
         return result == "DELETE 1"
 
@@ -144,14 +161,15 @@ class SemanticMemory:
     ) -> Relation:
         row = await self.pool.fetchrow(
             """INSERT INTO relations
-                   (subject_id, predicate, object_id, metadata,
+                   (owner_id, subject_id, predicate, object_id, metadata,
                     confidence, source_episode_id)
-               VALUES ($1, $2, $3, $4, $5, $6)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
                ON CONFLICT (subject_id, predicate, object_id) DO UPDATE SET
                    metadata = relations.metadata || EXCLUDED.metadata,
                    confidence = GREATEST(relations.confidence, EXCLUDED.confidence),
                    updated_at = NOW()
                RETURNING *""",
+            self.owner_id,
             subject_id,
             predicate,
             object_id,
@@ -169,9 +187,9 @@ class SemanticMemory:
         as_object: bool = True,
         limit: int = 50,
     ) -> list[Relation]:
-        conditions: list[str] = []
-        params: list[Any] = []
-        idx = 1
+        conditions: list[str] = [f"r.owner_id = $1"]
+        params: list[Any] = [self.owner_id]
+        idx = 2
 
         if entity_id is not None:
             parts = []
@@ -189,7 +207,7 @@ class SemanticMemory:
             params.append(predicate)
             idx += 1
 
-        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        where = f"WHERE {' AND '.join(conditions)}"
         params.append(limit)
 
         rows = await self.pool.fetch(
@@ -208,7 +226,9 @@ class SemanticMemory:
 
     async def delete_relation(self, relation_id: UUID) -> bool:
         result = await self.pool.execute(
-            "DELETE FROM relations WHERE id = $1", relation_id
+            "DELETE FROM relations WHERE id = $1 AND owner_id = $2",
+            relation_id,
+            self.owner_id,
         )
         return result == "DELETE 1"
 
@@ -225,7 +245,8 @@ class SemanticMemory:
                    SELECT r.id, r.subject_id, r.predicate, r.object_id,
                           r.confidence, 1 AS depth
                    FROM relations r
-                   WHERE r.subject_id = $1 OR r.object_id = $1
+                   WHERE r.owner_id = $3
+                     AND (r.subject_id = $1 OR r.object_id = $1)
 
                    UNION
 
@@ -236,7 +257,8 @@ class SemanticMemory:
                                     OR r.subject_id = g.subject_id
                                     OR r.object_id = g.subject_id
                                     OR r.object_id = g.object_id)
-                   WHERE g.depth < $2
+                   WHERE r.owner_id = $3
+                     AND g.depth < $2
                      AND r.id != g.id
                )
                SELECT DISTINCT g.*,
@@ -248,6 +270,7 @@ class SemanticMemory:
                ORDER BY g.depth, g.confidence DESC""",
             entity_id,
             max_depth,
+            self.owner_id,
         )
         return [
             {

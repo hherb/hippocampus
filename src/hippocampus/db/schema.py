@@ -14,6 +14,7 @@ def get_schema_sql(dim: int) -> str:
     -- Episodic Memory
     CREATE TABLE IF NOT EXISTS episodes (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        owner_id TEXT NOT NULL,
         session_id TEXT,
         source TEXT NOT NULL,
         content TEXT NOT NULL,
@@ -25,6 +26,7 @@ def get_schema_sql(dim: int) -> str:
 
     CREATE INDEX IF NOT EXISTS idx_episodes_embedding
         ON episodes USING hnsw (embedding vector_cosine_ops);
+    CREATE INDEX IF NOT EXISTS idx_episodes_owner ON episodes (owner_id);
     CREATE INDEX IF NOT EXISTS idx_episodes_created_at ON episodes (created_at);
     CREATE INDEX IF NOT EXISTS idx_episodes_session_id ON episodes (session_id);
     CREATE INDEX IF NOT EXISTS idx_episodes_source ON episodes (source);
@@ -32,6 +34,7 @@ def get_schema_sql(dim: int) -> str:
     -- Knowledge Graph: Entities
     CREATE TABLE IF NOT EXISTS entities (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        owner_id TEXT NOT NULL,
         name TEXT NOT NULL,
         entity_type TEXT NOT NULL,
         description TEXT,
@@ -45,14 +48,16 @@ def get_schema_sql(dim: int) -> str:
 
     CREATE INDEX IF NOT EXISTS idx_entities_embedding
         ON entities USING hnsw (embedding vector_cosine_ops);
+    CREATE INDEX IF NOT EXISTS idx_entities_owner ON entities (owner_id);
     CREATE INDEX IF NOT EXISTS idx_entities_name ON entities (name);
     CREATE INDEX IF NOT EXISTS idx_entities_type ON entities (entity_type);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_name_type
-        ON entities (name, entity_type);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_owner_name_type
+        ON entities (owner_id, name, entity_type);
 
     -- Knowledge Graph: Relations
     CREATE TABLE IF NOT EXISTS relations (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        owner_id TEXT NOT NULL,
         subject_id UUID NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
         predicate TEXT NOT NULL,
         object_id UUID NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
@@ -63,6 +68,7 @@ def get_schema_sql(dim: int) -> str:
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE INDEX IF NOT EXISTS idx_relations_owner ON relations (owner_id);
     CREATE INDEX IF NOT EXISTS idx_relations_subject ON relations (subject_id);
     CREATE INDEX IF NOT EXISTS idx_relations_object ON relations (object_id);
     CREATE INDEX IF NOT EXISTS idx_relations_predicate ON relations (predicate);
@@ -72,6 +78,7 @@ def get_schema_sql(dim: int) -> str:
     -- Reflections / Meta-Memory
     CREATE TABLE IF NOT EXISTS reflections (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        owner_id TEXT NOT NULL,
         content TEXT NOT NULL,
         reflection_type TEXT NOT NULL,
         embedding vector({dim}),
@@ -81,6 +88,7 @@ def get_schema_sql(dim: int) -> str:
 
     CREATE INDEX IF NOT EXISTS idx_reflections_embedding
         ON reflections USING hnsw (embedding vector_cosine_ops);
+    CREATE INDEX IF NOT EXISTS idx_reflections_owner ON reflections (owner_id);
     CREATE INDEX IF NOT EXISTS idx_reflections_type
         ON reflections (reflection_type);
 
@@ -94,6 +102,7 @@ def get_schema_sql(dim: int) -> str:
     -- Revision Proposals (Human Oversight)
     CREATE TABLE IF NOT EXISTS revision_proposals (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        owner_id TEXT NOT NULL,
         target_type TEXT NOT NULL,
         target_id UUID NOT NULL,
         action TEXT NOT NULL,
@@ -105,6 +114,8 @@ def get_schema_sql(dim: int) -> str:
         review_notes TEXT
     );
 
+    CREATE INDEX IF NOT EXISTS idx_revisions_owner
+        ON revision_proposals (owner_id);
     CREATE INDEX IF NOT EXISTS idx_revisions_status
         ON revision_proposals (status);
     CREATE INDEX IF NOT EXISTS idx_revisions_target
