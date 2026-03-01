@@ -1,3 +1,5 @@
+"""Episodic memory: timestamped, vector-searchable records of experiences."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -11,6 +13,8 @@ from hippocampus.embeddings.base import EmbeddingProvider, TaskType
 
 
 class EpisodicMemory:
+    """Store and recall episodic memories via semantic and temporal queries."""
+
     def __init__(
         self, pool: asyncpg.Pool, embedder: EmbeddingProvider, owner_id: str
     ) -> None:
@@ -25,6 +29,7 @@ class EpisodicMemory:
         session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Episode:
+        """Persist a new episodic memory with its embedding."""
         embedding = await self.embedder.embed_one(content, TaskType.DOCUMENT)
         row = await self.pool.fetchrow(
             """INSERT INTO episodes
@@ -48,10 +53,11 @@ class EpisodicMemory:
         source: str | None = None,
         session_id: str | None = None,
     ) -> list[tuple[Episode, float]]:
+        """Search episodes by semantic similarity, with optional filters."""
         embedding = await self.embedder.embed_one(query, TaskType.QUERY)
         vec = np.array(embedding, dtype=np.float32)
 
-        conditions = ["embedding IS NOT NULL", f"owner_id = $2"]
+        conditions = ["embedding IS NOT NULL", "owner_id = $2"]
         params: list[Any] = [vec, self.owner_id]
         idx = 3
 
@@ -86,6 +92,7 @@ class EpisodicMemory:
         limit: int = 10,
         session_id: str | None = None,
     ) -> list[Episode]:
+        """Retrieve the most recent episodes, optionally filtered by session."""
         if session_id:
             rows = await self.pool.fetch(
                 """SELECT * FROM episodes
@@ -106,6 +113,7 @@ class EpisodicMemory:
         return [Episode.from_row(row) for row in rows]
 
     async def get(self, episode_id: UUID) -> Episode | None:
+        """Fetch a single episode by ID."""
         row = await self.pool.fetchrow(
             "SELECT * FROM episodes WHERE id = $1 AND owner_id = $2",
             episode_id,
@@ -114,6 +122,7 @@ class EpisodicMemory:
         return Episode.from_row(row) if row else None
 
     async def delete(self, episode_id: UUID) -> bool:
+        """Delete an episode. Returns *True* if a row was removed."""
         result = await self.pool.execute(
             "DELETE FROM episodes WHERE id = $1 AND owner_id = $2",
             episode_id,

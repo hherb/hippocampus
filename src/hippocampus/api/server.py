@@ -1,6 +1,8 @@
+"""FastAPI REST server exposing Hippocampus memory operations."""
+
 from __future__ import annotations
 
-import asyncpg as _asyncpg
+import asyncpg
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
@@ -8,13 +10,13 @@ from uuid import UUID
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
-from hippocampus.config import settings
+from hippocampus.config import SIMILARITY_PRECISION, settings
 from hippocampus.db.pool import create_pool
 from hippocampus.db.schema import ensure_schema
 from hippocampus.embeddings.ollama import OllamaEmbedding
 from hippocampus.memory import MemoryManager
 
-_pool: _asyncpg.Pool | None = None
+_pool: asyncpg.Pool | None = None
 _embedder: OllamaEmbedding | None = None
 
 
@@ -25,6 +27,7 @@ def _get_manager(owner_id: str) -> MemoryManager:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Initialise the database pool, schema, and embedding provider."""
     global _pool, _embedder
     _pool = await create_pool(settings)
     await ensure_schema(_pool, settings)
@@ -46,6 +49,8 @@ app = FastAPI(
 
 
 class StoreEpisodeRequest(BaseModel):
+    """Body for storing a new episodic memory."""
+
     content: str
     source: str = "conversation"
     session_id: str | None = None
@@ -53,6 +58,8 @@ class StoreEpisodeRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
+    """Body for semantic episode search."""
+
     query: str
     limit: int = 10
     min_similarity: float = 0.0
@@ -61,6 +68,8 @@ class SearchRequest(BaseModel):
 
 
 class EntityRequest(BaseModel):
+    """Body for creating or upserting an entity."""
+
     name: str
     entity_type: str
     description: str | None = None
@@ -70,6 +79,8 @@ class EntityRequest(BaseModel):
 
 
 class RelationRequest(BaseModel):
+    """Body for creating a relation between entities."""
+
     subject_id: UUID
     predicate: str
     object_id: UUID
@@ -79,6 +90,8 @@ class RelationRequest(BaseModel):
 
 
 class ReflectionRequest(BaseModel):
+    """Body for creating a reflection."""
+
     content: str
     reflection_type: str = "summary"
     source_episode_ids: list[UUID] | None = None
@@ -86,6 +99,8 @@ class ReflectionRequest(BaseModel):
 
 
 class RevisionRequest(BaseModel):
+    """Body for proposing a revision."""
+
     target_type: str
     target_id: UUID
     action: str
@@ -94,6 +109,8 @@ class RevisionRequest(BaseModel):
 
 
 class ReviewRequest(BaseModel):
+    """Body for approving or rejecting a revision."""
+
     review_notes: str | None = None
 
 
@@ -123,7 +140,7 @@ async def search_episodes(
     )
     return {
         "results": [
-            {"episode": ep.to_dict(), "similarity": round(sim, 4)}
+            {"episode": ep.to_dict(), "similarity": round(sim, SIMILARITY_PRECISION)}
             for ep, sim in results
         ]
     }
@@ -184,7 +201,7 @@ async def create_entity(
     return entity.to_dict()
 
 
-@app.post("/api/v1/entities/search")
+@app.get("/api/v1/entities/search")
 async def search_entities(
     owner_id: str = Query(..., description="Owner/tenant identifier"),
     query: str = Query(...),
@@ -198,7 +215,7 @@ async def search_entities(
     )
     return {
         "entities": [
-            {"entity": ent.to_dict(), "similarity": round(sim, 4)}
+            {"entity": ent.to_dict(), "similarity": round(sim, SIMILARITY_PRECISION)}
             for ent, sim in results
         ]
     }
@@ -303,7 +320,7 @@ async def create_reflection(
     return reflection.to_dict()
 
 
-@app.post("/api/v1/reflections/search")
+@app.get("/api/v1/reflections/search")
 async def search_reflections(
     owner_id: str = Query(..., description="Owner/tenant identifier"),
     query: str = Query(...),
@@ -314,7 +331,7 @@ async def search_reflections(
     results = await mgr.reflection.search(query, reflection_type, limit)
     return {
         "reflections": [
-            {"reflection": ref.to_dict(), "similarity": round(sim, 4)}
+            {"reflection": ref.to_dict(), "similarity": round(sim, SIMILARITY_PRECISION)}
             for ref, sim in results
         ]
     }
@@ -394,6 +411,7 @@ async def reject_revision(
 
 @app.get("/api/v1/health")
 async def health():
+    """Health check endpoint."""
     return {"status": "ok"}
 
 
@@ -401,6 +419,7 @@ async def health():
 async def stats(
     owner_id: str = Query(..., description="Owner/tenant identifier"),
 ):
+    """Return aggregate counts for all memory types."""
     async with _pool.acquire() as conn:
         counts = await conn.fetchrow(
             """SELECT
@@ -416,6 +435,7 @@ async def stats(
 
 
 def run_api() -> None:
+    """Launch the API server via uvicorn."""
     import uvicorn
 
     uvicorn.run(app, host=settings.api_host, port=settings.api_port)

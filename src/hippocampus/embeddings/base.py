@@ -1,3 +1,5 @@
+"""Abstract base class for embedding providers."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -14,6 +16,8 @@ class TaskType(str, Enum):
 
 
 class EmbeddingProvider(ABC):
+    """Interface for text-to-vector embedding backends."""
+
     @abstractmethod
     async def embed(
         self, texts: list[str], task_type: TaskType = TaskType.DOCUMENT
@@ -24,5 +28,9 @@ class EmbeddingProvider(ABC):
     async def embed_one(
         self, text: str, task_type: TaskType = TaskType.DOCUMENT
     ) -> list[float]:
+        """Convenience wrapper to embed a single text."""
         results = await self.embed([text], task_type)
         return results[0]
+
+    async def close(self) -> None:
+        """Release any underlying resources (HTTP clients, etc.)."""

@@ -1,3 +1,5 @@
+"""Reflection memory: meta-level insights and human-governed revision proposals."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -29,6 +31,7 @@ class ReflectionMemory:
         source_episode_ids: list[UUID] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Reflection:
+        """Store a new reflection with its embedding."""
         embedding = await self.embedder.embed_one(content, TaskType.DOCUMENT)
 
         async with self.pool.acquire() as conn:
@@ -63,6 +66,7 @@ class ReflectionMemory:
         reflection_type: str | None = None,
         limit: int = 10,
     ) -> list[tuple[Reflection, float]]:
+        """Search reflections by semantic similarity."""
         embedding = await self.embedder.embed_one(query, TaskType.QUERY)
         vec = np.array(embedding, dtype=np.float32)
 
@@ -97,6 +101,7 @@ class ReflectionMemory:
         reflection_type: str | None = None,
         limit: int = 10,
     ) -> list[Reflection]:
+        """Retrieve the most recent reflections, optionally by type."""
         if reflection_type:
             rows = await self.pool.fetch(
                 """SELECT * FROM reflections
@@ -126,6 +131,7 @@ class ReflectionMemory:
         proposed_changes: dict[str, Any],
         reason: str,
     ) -> RevisionProposal:
+        """Create a revision proposal for human review."""
         row = await self.pool.fetchrow(
             """INSERT INTO revision_proposals
                    (owner_id, target_type, target_id, action,
@@ -146,6 +152,7 @@ class ReflectionMemory:
         status: str = "pending",
         limit: int = 50,
     ) -> list[RevisionProposal]:
+        """List revision proposals filtered by status."""
         rows = await self.pool.fetch(
             """SELECT * FROM revision_proposals
                WHERE owner_id = $1 AND status = $2
@@ -182,6 +189,7 @@ class ReflectionMemory:
     async def reject_revision(
         self, revision_id: UUID, review_notes: str | None = None
     ) -> RevisionProposal | None:
+        """Reject a pending revision proposal."""
         row = await self.pool.fetchrow(
             """UPDATE revision_proposals
                SET status = 'rejected', reviewed_at = NOW(),
@@ -197,6 +205,7 @@ class ReflectionMemory:
     async def _apply_revision(
         self, conn: asyncpg.Connection, proposal: RevisionProposal
     ) -> None:
+        """Execute the changes described by an approved proposal."""
         changes = proposal.proposed_changes
 
         if proposal.action == "delete":
@@ -256,9 +265,7 @@ class ReflectionMemory:
         elif proposal.action == "merge" and proposal.target_type == "entity":
             merge_into = changes.get("merge_into_id")
             if merge_into:
-                from uuid import UUID as _UUID
-
-                target = _UUID(merge_into) if isinstance(merge_into, str) else merge_into
+                target = UUID(merge_into) if isinstance(merge_into, str) else merge_into
                 # Re-point all relations from the old entity to the merge target
                 await conn.execute(
                     """UPDATE relations SET subject_id = $2, updated_at = NOW()

@@ -1,3 +1,5 @@
+"""Database schema DDL and migration helper."""
+
 from __future__ import annotations
 
 import asyncpg
@@ -6,6 +8,11 @@ from hippocampus.config import Settings
 
 
 def get_schema_sql(dim: int) -> str:
+    """Return the full DDL for all Hippocampus tables and indexes.
+
+    Args:
+        dim: Vector dimension used for embedding columns.
+    """
     return f"""
     -- Extensions
     CREATE EXTENSION IF NOT EXISTS vector;
@@ -124,6 +131,7 @@ def get_schema_sql(dim: int) -> str:
 
 
 async def ensure_schema(pool: asyncpg.Pool, settings: Settings) -> None:
+    """Create all tables and indexes if they do not already exist."""
     sql = get_schema_sql(settings.embedding_dimensions)
     async with pool.acquire() as conn:
         await conn.execute(sql)

@@ -1,3 +1,5 @@
+"""Semantic memory: knowledge graph of entities and their relations."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -31,6 +33,7 @@ class SemanticMemory:
         confidence: float = 1.0,
         source_episode_id: UUID | None = None,
     ) -> Entity:
+        """Insert or upsert an entity (merges on ``(owner_id, name, entity_type)``)."""
         text = f"{name}: {description}" if description else name
         embedding = await self.embedder.embed_one(text, TaskType.DOCUMENT)
 
@@ -64,6 +67,7 @@ class SemanticMemory:
         limit: int = 10,
         semantic: bool = True,
     ) -> list[tuple[Entity, float]]:
+        """Search entities by semantic similarity or text matching."""
         if semantic:
             embedding = await self.embedder.embed_one(query, TaskType.QUERY)
             vec = np.array(embedding, dtype=np.float32)
@@ -121,6 +125,7 @@ class SemanticMemory:
         return [(Entity.from_row(r), float(r["similarity"])) for r in rows]
 
     async def get_entity(self, entity_id: UUID) -> Entity | None:
+        """Fetch a single entity by ID."""
         row = await self.pool.fetchrow(
             "SELECT * FROM entities WHERE id = $1 AND owner_id = $2",
             entity_id,
@@ -131,6 +136,7 @@ class SemanticMemory:
     async def get_entity_by_name(
         self, name: str, entity_type: str
     ) -> Entity | None:
+        """Look up an entity by its unique ``(owner_id, name, entity_type)`` triple."""
         row = await self.pool.fetchrow(
             """SELECT * FROM entities
                WHERE owner_id = $1 AND name = $2 AND entity_type = $3""",
@@ -141,6 +147,7 @@ class SemanticMemory:
         return Entity.from_row(row) if row else None
 
     async def delete_entity(self, entity_id: UUID) -> bool:
+        """Delete an entity. Returns *True* if a row was removed."""
         result = await self.pool.execute(
             "DELETE FROM entities WHERE id = $1 AND owner_id = $2",
             entity_id,
@@ -159,6 +166,7 @@ class SemanticMemory:
         confidence: float = 1.0,
         source_episode_id: UUID | None = None,
     ) -> Relation:
+        """Insert or upsert a relation (merges on ``(subject_id, predicate, object_id)``)."""
         row = await self.pool.fetchrow(
             """INSERT INTO relations
                    (owner_id, subject_id, predicate, object_id, metadata,
@@ -187,7 +195,8 @@ class SemanticMemory:
         as_object: bool = True,
         limit: int = 50,
     ) -> list[Relation]:
-        conditions: list[str] = [f"r.owner_id = $1"]
+        """Query relations with optional entity and predicate filters."""
+        conditions: list[str] = ["r.owner_id = $1"]
         params: list[Any] = [self.owner_id]
         idx = 2
 
@@ -225,6 +234,7 @@ class SemanticMemory:
         return [Relation.from_row(r) for r in rows]
 
     async def delete_relation(self, relation_id: UUID) -> bool:
+        """Delete a relation. Returns *True* if a row was removed."""
         result = await self.pool.execute(
             "DELETE FROM relations WHERE id = $1 AND owner_id = $2",
             relation_id,
@@ -239,7 +249,7 @@ class SemanticMemory:
         entity_id: UUID,
         max_depth: int = 2,
     ) -> list[dict[str, Any]]:
-        """BFS traversal from an entity, returning connected subgraph."""
+        """BFS traversal from an entity, returning the connected subgraph."""
         rows = await self.pool.fetch(
             """WITH RECURSIVE graph AS (
                    SELECT r.id, r.subject_id, r.predicate, r.object_id,

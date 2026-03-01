@@ -1,3 +1,5 @@
+"""Data models for memory records, entities, relations, and reflections."""
+
 from __future__ import annotations
 
 import json
@@ -6,9 +8,33 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+import asyncpg
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+
+def _parse_metadata(raw: Any) -> dict[str, Any]:
+    """Normalise a metadata value from a database row to a plain dict."""
+    if isinstance(raw, dict):
+        return raw
+    return json.loads(raw or "{}")
+
+
+def _parse_embedding(raw: Any) -> list[float] | None:
+    """Convert a pgvector numpy array to a plain list, or return *None*."""
+    if raw is None:
+        return None
+    return raw.tolist()
+
+
+# ── Episode ────────────────────────────────────────────────────────────
+
 
 @dataclass
 class Episode:
+    """A single episodic memory record."""
+
     id: UUID
     owner_id: str
     source: str
@@ -20,7 +46,8 @@ class Episode:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_row(cls, row) -> Episode:
+    def from_row(cls, row: asyncpg.Record) -> Episode:
+        """Construct an :class:`Episode` from a database row."""
         return cls(
             id=row["id"],
             owner_id=row["owner_id"],
@@ -29,11 +56,12 @@ class Episode:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             session_id=row["session_id"],
-            embedding=row["embedding"].tolist() if row["embedding"] is not None else None,
-            metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"] or "{}"),
+            embedding=_parse_embedding(row["embedding"]),
+            metadata=_parse_metadata(row["metadata"]),
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe dictionary (excludes embedding)."""
         return {
             "id": str(self.id),
             "owner_id": self.owner_id,
@@ -46,8 +74,13 @@ class Episode:
         }
 
 
+# ── Entity ─────────────────────────────────────────────────────────────
+
+
 @dataclass
 class Entity:
+    """A named entity in the knowledge graph."""
+
     id: UUID
     owner_id: str
     name: str
@@ -61,7 +94,8 @@ class Entity:
     source_episode_id: UUID | None = None
 
     @classmethod
-    def from_row(cls, row) -> Entity:
+    def from_row(cls, row: asyncpg.Record) -> Entity:
+        """Construct an :class:`Entity` from a database row."""
         return cls(
             id=row["id"],
             owner_id=row["owner_id"],
@@ -70,13 +104,14 @@ class Entity:
             description=row["description"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            embedding=row["embedding"].tolist() if row["embedding"] is not None else None,
-            metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"] or "{}"),
+            embedding=_parse_embedding(row["embedding"]),
+            metadata=_parse_metadata(row["metadata"]),
             confidence=row["confidence"],
             source_episode_id=row["source_episode_id"],
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe dictionary (excludes embedding)."""
         return {
             "id": str(self.id),
             "owner_id": self.owner_id,
@@ -91,8 +126,13 @@ class Entity:
         }
 
 
+# ── Relation ───────────────────────────────────────────────────────────
+
+
 @dataclass
 class Relation:
+    """A directed relationship between two entities."""
+
     id: UUID
     owner_id: str
     subject_id: UUID
@@ -108,7 +148,8 @@ class Relation:
     object_name: str | None = None
 
     @classmethod
-    def from_row(cls, row) -> Relation:
+    def from_row(cls, row: asyncpg.Record) -> Relation:
+        """Construct a :class:`Relation` from a database row."""
         return cls(
             id=row["id"],
             owner_id=row["owner_id"],
@@ -117,7 +158,7 @@ class Relation:
             object_id=row["object_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"] or "{}"),
+            metadata=_parse_metadata(row["metadata"]),
             confidence=row["confidence"],
             source_episode_id=row["source_episode_id"],
             subject_name=row.get("subject_name"),
@@ -125,7 +166,8 @@ class Relation:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        d = {
+        """Serialise to a JSON-safe dictionary."""
+        d: dict[str, Any] = {
             "id": str(self.id),
             "owner_id": self.owner_id,
             "subject_id": str(self.subject_id),
@@ -144,8 +186,13 @@ class Relation:
         return d
 
 
+# ── Reflection ─────────────────────────────────────────────────────────
+
+
 @dataclass
 class Reflection:
+    """A distilled insight, summary, or pattern derived from episodic memories."""
+
     id: UUID
     owner_id: str
     content: str
@@ -156,18 +203,20 @@ class Reflection:
     source_episode_ids: list[UUID] = field(default_factory=list)
 
     @classmethod
-    def from_row(cls, row) -> Reflection:
+    def from_row(cls, row: asyncpg.Record) -> Reflection:
+        """Construct a :class:`Reflection` from a database row."""
         return cls(
             id=row["id"],
             owner_id=row["owner_id"],
             content=row["content"],
             reflection_type=row["reflection_type"],
             created_at=row["created_at"],
-            embedding=row["embedding"].tolist() if row["embedding"] is not None else None,
-            metadata=row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"] or "{}"),
+            embedding=_parse_embedding(row["embedding"]),
+            metadata=_parse_metadata(row["metadata"]),
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe dictionary (excludes embedding)."""
         return {
             "id": str(self.id),
             "owner_id": self.owner_id,
@@ -179,8 +228,13 @@ class Reflection:
         }
 
 
+# ── RevisionProposal ──────────────────────────────────────────────────
+
+
 @dataclass
 class RevisionProposal:
+    """A proposed change to the knowledge graph awaiting human review."""
+
     id: UUID
     owner_id: str
     target_type: str
@@ -194,18 +248,15 @@ class RevisionProposal:
     review_notes: str | None = None
 
     @classmethod
-    def from_row(cls, row) -> RevisionProposal:
+    def from_row(cls, row: asyncpg.Record) -> RevisionProposal:
+        """Construct a :class:`RevisionProposal` from a database row."""
         return cls(
             id=row["id"],
             owner_id=row["owner_id"],
             target_type=row["target_type"],
             target_id=row["target_id"],
             action=row["action"],
-            proposed_changes=(
-                row["proposed_changes"]
-                if isinstance(row["proposed_changes"], dict)
-                else json.loads(row["proposed_changes"] or "{}")
-            ),
+            proposed_changes=_parse_metadata(row["proposed_changes"]),
             reason=row["reason"],
             status=row["status"],
             created_at=row["created_at"],
@@ -214,6 +265,7 @@ class RevisionProposal:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialise to a JSON-safe dictionary."""
         return {
             "id": str(self.id),
             "owner_id": self.owner_id,

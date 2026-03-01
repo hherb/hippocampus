@@ -1,11 +1,13 @@
+"""Memory subsystem facade."""
+
 from __future__ import annotations
 
 import asyncpg
 
 from hippocampus.embeddings.base import EmbeddingProvider
 from hippocampus.memory.episodic import EpisodicMemory
-from hippocampus.memory.semantic import SemanticMemory
 from hippocampus.memory.reflection import ReflectionMemory
+from hippocampus.memory.semantic import SemanticMemory
 
 
 class MemoryManager:

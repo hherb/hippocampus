@@ -1,12 +1,15 @@
+"""MCP (Model Context Protocol) server exposing Hippocampus memory tools."""
+
 from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from typing import Any
 from uuid import UUID
 
 from mcp.server.fastmcp import FastMCP
 
-from hippocampus.config import settings
+from hippocampus.config import SIMILARITY_PRECISION, settings
 from hippocampus.db.pool import create_pool
 from hippocampus.db.schema import ensure_schema
 from hippocampus.embeddings.ollama import OllamaEmbedding
@@ -21,6 +24,7 @@ _owner_id: str = settings.default_owner
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
+    """Initialise the database pool, schema, and embedding provider."""
     global _manager, _embedder
     pool = await create_pool(settings)
     await ensure_schema(pool, settings)
@@ -44,10 +48,13 @@ mcp = FastMCP(
         "understanding over time."
     ),
     lifespan=lifespan,
+    host=settings.mcp_sse_host,
+    port=settings.mcp_sse_port,
 )
 
 
-def _json(obj) -> str:
+def _json(obj: Any) -> str:
+    """Serialise *obj* to a pretty-printed JSON string."""
     return json.dumps(obj, indent=2, default=str)
 
 
@@ -99,7 +106,7 @@ async def recall(
     )
     return _json({
         "results": [
-            {"episode": ep.to_dict(), "similarity": round(sim, 4)}
+            {"episode": ep.to_dict(), "similarity": round(sim, SIMILARITY_PRECISION)}
             for ep, sim in results
         ]
     })
@@ -216,7 +223,7 @@ async def find_entities(
     )
     return _json({
         "entities": [
-            {"entity": ent.to_dict(), "similarity": round(sim, 4)}
+            {"entity": ent.to_dict(), "similarity": round(sim, SIMILARITY_PRECISION)}
             for ent, sim in results
         ]
     })
@@ -320,7 +327,7 @@ async def search_reflections(
     results = await _manager.reflection.search(query, reflection_type, limit)
     return _json({
         "reflections": [
-            {"reflection": ref.to_dict(), "similarity": round(sim, 4)}
+            {"reflection": ref.to_dict(), "similarity": round(sim, SIMILARITY_PRECISION)}
             for ref, sim in results
         ]
     })
@@ -375,6 +382,7 @@ async def pending_revisions(limit: int = 20) -> str:
 
 
 def run_stdio(owner_id: str | None = None) -> None:
+    """Start the MCP server over stdio transport."""
     global _owner_id
     if owner_id:
         _owner_id = owner_id
@@ -382,13 +390,12 @@ def run_stdio(owner_id: str | None = None) -> None:
 
 
 def run_sse(owner_id: str | None = None) -> None:
+    """Start the MCP server over SSE transport.
+
+    Host and port are configured via the ``FastMCP`` constructor
+    (sourced from ``settings.mcp_sse_host`` / ``settings.mcp_sse_port``).
+    """
     global _owner_id
     if owner_id:
         _owner_id = owner_id
-    mcp.run(
-        transport="sse",
-        sse_params={
-            "host": settings.mcp_sse_host,
-            "port": settings.mcp_sse_port,
-        },
-    )
+    mcp.run(transport="sse")
