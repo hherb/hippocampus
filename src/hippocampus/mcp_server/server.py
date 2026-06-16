@@ -373,34 +373,81 @@ async def search_reflections(
 @mcp.tool()
 async def propose_revision(
     target_type: str,
-    target_name: str,
-    target_entity_type: str,
     action: str,
     proposed_changes: str,
     reason: str,
+    target_name: str | None = None,
+    target_entity_type: str | None = None,
+    subject: str | None = None,
+    subject_type: str | None = None,
+    predicate: str | None = None,
+    object_: str | None = None,
+    object_type: str | None = None,
 ) -> str:
     """Propose a change to the knowledge graph that requires human approval.
     Use this for significant changes like merging entities, deleting
     established knowledge, or correcting contradictions.
 
+    To target an entity, provide ``target_name`` and ``target_entity_type``.
+    To target a relation, provide the full triple: ``subject`` / ``subject_type``
+    / ``predicate`` / ``object_`` / ``object_type``.
+
     Args:
         target_type: "entity" or "relation".
-        target_name: Name of the target entity.
-        target_entity_type: Type of the target entity.
         action: "update", "delete", or "merge".
         proposed_changes: JSON string describing the changes.
         reason: Why this revision is proposed.
+        target_name: Name of the target entity (entity revisions).
+        target_entity_type: Type of the target entity (entity revisions).
+        subject: Subject entity name (relation revisions).
+        subject_type: Subject entity type (relation revisions).
+        predicate: Relation predicate (relation revisions).
+        object_: Object entity name (relation revisions).
+        object_type: Object entity type (relation revisions).
     """
     mgr = _require_manager()
-    entity = await mgr.semantic.get_entity_by_name(
-        target_name, target_entity_type
-    )
-    if entity is None:
-        return _json({"error": f"Entity '{target_name}' ({target_entity_type}) not found"})
+
+    if target_type == "entity":
+        if not (target_name and target_entity_type):
+            return _json({
+                "error": "target_name and target_entity_type are required "
+                         "for entity revisions"
+            })
+        entity = await mgr.semantic.get_entity_by_name(
+            target_name, target_entity_type
+        )
+        if entity is None:
+            return _json({"error": f"Entity '{target_name}' ({target_entity_type}) not found"})
+        target_id = entity.id
+
+    elif target_type == "relation":
+        if not all([subject, subject_type, predicate, object_, object_type]):
+            return _json({
+                "error": "subject, subject_type, predicate, object_, and "
+                         "object_type are all required for relation revisions"
+            })
+        subj = await mgr.semantic.get_entity_by_name(subject, subject_type)
+        obj = await mgr.semantic.get_entity_by_name(object_, object_type)
+        if subj is None or obj is None:
+            return _json({"error": "Subject or object entity not found"})
+        relation = await mgr.semantic.get_relation_by_triple(
+            subj.id, predicate, obj.id
+        )
+        if relation is None:
+            return _json({
+                "error": f"Relation '{subject} {predicate} {object_}' not found"
+            })
+        target_id = relation.id
+
+    else:
+        return _json({
+            "error": f"Invalid target_type '{target_type}'; "
+                     "must be 'entity' or 'relation'"
+        })
 
     changes = _parse_json(proposed_changes, "proposed_changes")
     proposal = await mgr.reflection.propose_revision(
-        target_type, entity.id, action, changes, reason
+        target_type, target_id, action, changes, reason
     )
     return _json({"proposal": proposal.to_dict()})
 

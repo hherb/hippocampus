@@ -151,6 +151,28 @@ class SemanticMemory:
         )
         return Entity.from_row(row) if row else None
 
+    async def get_relation_by_triple(
+        self, subject_id: UUID, predicate: str, object_id: UUID
+    ) -> Relation | None:
+        """Look up a relation by its unique ``(subject_id, predicate, object_id)`` triple."""
+        row = await self.pool.fetchrow(
+            """SELECT r.*,
+                      s.name AS subject_name,
+                      o.name AS object_name
+               FROM relations r
+               JOIN entities s ON r.subject_id = s.id
+               JOIN entities o ON r.object_id = o.id
+               WHERE r.owner_id = $1
+                 AND r.subject_id = $2
+                 AND r.predicate = $3
+                 AND r.object_id = $4""",
+            self.owner_id,
+            subject_id,
+            predicate,
+            object_id,
+        )
+        return Relation.from_row(row) if row else None
+
     async def delete_entity(self, entity_id: UUID) -> bool:
         """Delete an entity. Returns *True* if a row was removed."""
         result = await self.pool.execute(
