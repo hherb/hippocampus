@@ -23,6 +23,7 @@ class OllamaEmbedding(EmbeddingProvider):
         self.base_url = settings.ollama_url.rstrip("/")
         self.model = settings.embedding_model
         self.use_prefix = settings.embedding_prefix
+        self.expected_dimensions = settings.embedding_dimensions
         self._client = httpx.AsyncClient(
             timeout=settings.embedding_request_timeout,
         )
@@ -73,7 +74,28 @@ class OllamaEmbedding(EmbeddingProvider):
                 f"Unexpected Ollama response (missing 'embeddings' key): "
                 f"{str(data)[:200]}"
             )
-        return data["embeddings"]
+
+        embeddings = data["embeddings"]
+        if len(embeddings) != len(input_texts):
+            raise EmbeddingError(
+                f"Ollama returned {len(embeddings)} embeddings for "
+                f"{len(input_texts)} inputs"
+            )
+
+        # Guard against a model whose vector size disagrees with the schema's
+        # vector(dim) column — otherwise this surfaces as an opaque error deep
+        # inside an INSERT. Check the first vector (all are uniform).
+        if embeddings:
+            got = len(embeddings[0])
+            if got != self.expected_dimensions:
+                raise EmbeddingError(
+                    f"Embedding model '{self.model}' returned {got}-dim vectors, "
+                    f"but the schema expects {self.expected_dimensions}. Set "
+                    f"HIPPOCAMPUS_EMBEDDING_DIMENSIONS to match the model and "
+                    f"re-run 'hippocampus init-db'."
+                )
+
+        return embeddings
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
