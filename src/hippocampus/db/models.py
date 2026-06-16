@@ -206,7 +206,14 @@ class Reflection:
 
     @classmethod
     def from_row(cls, row: asyncpg.Record) -> Reflection:
-        """Construct a :class:`Reflection` from a database row."""
+        """Construct a :class:`Reflection` from a database row.
+
+        If the row carries an aggregated ``source_episode_ids`` column (from a
+        join against ``reflection_episodes``), it is used to populate the
+        linked episode IDs; otherwise the list defaults to empty.
+        """
+        raw_ids = row.get("source_episode_ids") if hasattr(row, "get") else None
+        source_episode_ids = [eid for eid in raw_ids if eid is not None] if raw_ids else []
         return cls(
             id=row["id"],
             owner_id=row["owner_id"],
@@ -215,6 +222,7 @@ class Reflection:
             created_at=row["created_at"],
             embedding=_parse_embedding(row["embedding"]),
             metadata=_parse_metadata(row["metadata"]),
+            source_episode_ids=source_episode_ids,
         )
 
     def to_dict(self) -> dict[str, Any]:

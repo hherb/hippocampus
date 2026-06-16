@@ -355,6 +355,18 @@ async def list_reflections(
     return {"reflections": [r.to_dict() for r in reflections]}
 
 
+@app.get("/api/v1/reflections/{reflection_id}")
+async def get_reflection(
+    reflection_id: UUID,
+    owner_id: str = Query(..., description="Owner/tenant identifier"),
+):
+    mgr = _get_manager(owner_id)
+    reflection = await mgr.reflection.get(reflection_id)
+    if reflection is None:
+        raise HTTPException(404, "Reflection not found")
+    return reflection.to_dict()
+
+
 # ── Revision Proposals ─────────────────────────────────────────────────
 
 

@@ -38,7 +38,21 @@ class SemanticMemory:
         confidence: float = 1.0,
         source_episode_id: UUID | None = None,
     ) -> Entity:
-        """Insert or upsert an entity (merges on ``(owner_id, name, entity_type)``)."""
+        """Insert or upsert an entity (merges on ``(owner_id, name, entity_type)``).
+
+        Upsert semantics on conflict:
+
+        - ``description`` is kept when a new one is omitted (``COALESCE``).
+        - ``embedding`` is only replaced when a new ``description`` is supplied;
+          otherwise the existing embedding (which matches the retained
+          description) is preserved. Since the conflict key includes ``name``,
+          a name-only re-embed would otherwise silently de-sync the stored
+          embedding from the stored description.
+        - ``metadata`` is shallow-merged (new keys win; keys cannot be cleared).
+        - ``confidence`` is monotonically non-decreasing (``GREATEST``): it acts
+          as a high-water mark and a later, lower-confidence observation will
+          not reduce it.
+        """
         text = f"{name}: {description}" if description else name
         embedding = await self.embedder.embed_one(text, TaskType.DOCUMENT)
 
@@ -49,7 +63,10 @@ class SemanticMemory:
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                ON CONFLICT (owner_id, name, entity_type) DO UPDATE SET
                    description = COALESCE(EXCLUDED.description, entities.description),
-                   embedding = EXCLUDED.embedding,
+                   embedding = CASE
+                       WHEN EXCLUDED.description IS NULL THEN entities.embedding
+                       ELSE EXCLUDED.embedding
+                   END,
                    metadata = entities.metadata || EXCLUDED.metadata,
                    confidence = GREATEST(entities.confidence, EXCLUDED.confidence),
                    updated_at = NOW()
@@ -150,6 +167,28 @@ class SemanticMemory:
             entity_type,
         )
         return Entity.from_row(row) if row else None
+
+    async def get_relation_by_triple(
+        self, subject_id: UUID, predicate: str, object_id: UUID
+    ) -> Relation | None:
+        """Look up a relation by its unique ``(subject_id, predicate, object_id)`` triple."""
+        row = await self.pool.fetchrow(
+            """SELECT r.*,
+                      s.name AS subject_name,
+                      o.name AS object_name
+               FROM relations r
+               JOIN entities s ON r.subject_id = s.id
+               JOIN entities o ON r.object_id = o.id
+               WHERE r.owner_id = $1
+                 AND r.subject_id = $2
+                 AND r.predicate = $3
+                 AND r.object_id = $4""",
+            self.owner_id,
+            subject_id,
+            predicate,
+            object_id,
+        )
+        return Relation.from_row(row) if row else None
 
     async def delete_entity(self, entity_id: UUID) -> bool:
         """Delete an entity. Returns *True* if a row was removed."""
