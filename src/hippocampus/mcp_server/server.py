@@ -275,11 +275,25 @@ async def query_relations(
         limit: Maximum results.
     """
     mgr = _require_manager()
+
+    if not entity_name and not predicate:
+        return _json({
+            "error": "Provide at least one of 'entity_name' or 'predicate'"
+        })
+
     entity_id = None
-    if entity_name and entity_type:
+    if entity_name:
+        if not entity_type:
+            return _json({
+                "error": "'entity_type' is required when 'entity_name' is given"
+            })
         entity = await mgr.semantic.get_entity_by_name(entity_name, entity_type)
-        if entity:
-            entity_id = entity.id
+        if entity is None:
+            return _json({
+                "error": f"Entity '{entity_name}' ({entity_type}) not found",
+                "relations": [],
+            })
+        entity_id = entity.id
 
     relations = await mgr.semantic.get_relations(
         entity_id=entity_id, predicate=predicate, limit=limit
