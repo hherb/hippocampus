@@ -14,6 +14,15 @@ from hippocampus.embeddings.base import EmbeddingProvider, TaskType
 VALID_TARGET_TYPES = frozenset({"entity", "relation"})
 VALID_ACTIONS = frozenset({"update", "delete", "merge"})
 
+# Reusable SQL fragments to attach a reflection's linked episode IDs.
+# Used with ``GROUP BY r.id`` so reflection columns remain selectable.
+_SOURCE_IDS_AGG = (
+    "COALESCE("
+    "array_agg(re.episode_id) FILTER (WHERE re.episode_id IS NOT NULL), "
+    "'{}'::uuid[]) AS source_episode_ids"
+)
+_SOURCE_IDS_JOIN = "LEFT JOIN reflection_episodes re ON re.reflection_id = r.id"
+
 
 class ReflectionMemory:
     """Meta-memory: reflections, summaries, and human-governed revision proposals."""
@@ -75,11 +84,14 @@ class ReflectionMemory:
 
         if reflection_type:
             rows = await self.pool.fetch(
-                """SELECT *, 1 - (embedding <=> $1) AS similarity
-                   FROM reflections
-                   WHERE embedding IS NOT NULL
-                     AND owner_id = $3 AND reflection_type = $4
-                   ORDER BY embedding <=> $1
+                f"""SELECT r.*, 1 - (r.embedding <=> $1) AS similarity,
+                          {_SOURCE_IDS_AGG}
+                   FROM reflections r
+                   {_SOURCE_IDS_JOIN}
+                   WHERE r.embedding IS NOT NULL
+                     AND r.owner_id = $3 AND r.reflection_type = $4
+                   GROUP BY r.id
+                   ORDER BY r.embedding <=> $1
                    LIMIT $2""",
                 vec,
                 limit,
@@ -88,10 +100,13 @@ class ReflectionMemory:
             )
         else:
             rows = await self.pool.fetch(
-                """SELECT *, 1 - (embedding <=> $1) AS similarity
-                   FROM reflections
-                   WHERE embedding IS NOT NULL AND owner_id = $3
-                   ORDER BY embedding <=> $1
+                f"""SELECT r.*, 1 - (r.embedding <=> $1) AS similarity,
+                          {_SOURCE_IDS_AGG}
+                   FROM reflections r
+                   {_SOURCE_IDS_JOIN}
+                   WHERE r.embedding IS NOT NULL AND r.owner_id = $3
+                   GROUP BY r.id
+                   ORDER BY r.embedding <=> $1
                    LIMIT $2""",
                 vec,
                 limit,
@@ -107,22 +122,41 @@ class ReflectionMemory:
         """Retrieve the most recent reflections, optionally by type."""
         if reflection_type:
             rows = await self.pool.fetch(
-                """SELECT * FROM reflections
-                   WHERE owner_id = $1 AND reflection_type = $2
-                   ORDER BY created_at DESC LIMIT $3""",
+                f"""SELECT r.*, {_SOURCE_IDS_AGG}
+                   FROM reflections r
+                   {_SOURCE_IDS_JOIN}
+                   WHERE r.owner_id = $1 AND r.reflection_type = $2
+                   GROUP BY r.id
+                   ORDER BY r.created_at DESC LIMIT $3""",
                 self.owner_id,
                 reflection_type,
                 limit,
             )
         else:
             rows = await self.pool.fetch(
-                """SELECT * FROM reflections
-                   WHERE owner_id = $1
-                   ORDER BY created_at DESC LIMIT $2""",
+                f"""SELECT r.*, {_SOURCE_IDS_AGG}
+                   FROM reflections r
+                   {_SOURCE_IDS_JOIN}
+                   WHERE r.owner_id = $1
+                   GROUP BY r.id
+                   ORDER BY r.created_at DESC LIMIT $2""",
                 self.owner_id,
                 limit,
             )
         return [Reflection.from_row(r) for r in rows]
+
+    async def get(self, reflection_id: UUID) -> Reflection | None:
+        """Fetch a single reflection by ID, including its source episode IDs."""
+        row = await self.pool.fetchrow(
+            f"""SELECT r.*, {_SOURCE_IDS_AGG}
+               FROM reflections r
+               {_SOURCE_IDS_JOIN}
+               WHERE r.id = $1 AND r.owner_id = $2
+               GROUP BY r.id""",
+            reflection_id,
+            self.owner_id,
+        )
+        return Reflection.from_row(row) if row else None
 
     # ── Revision Proposals ──────────────────────────────────────────────
 
