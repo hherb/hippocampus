@@ -323,70 +323,93 @@ class ReflectionMemory:
 
         elif proposal.action == "merge" and proposal.target_type == "entity":
             merge_into = changes.get("merge_into_id")
-            if merge_into:
+            if not merge_into:
+                raise ValueError(
+                    "merge action requires 'merge_into_id' in proposed_changes"
+                )
+            try:
                 target = UUID(merge_into) if isinstance(merge_into, str) else merge_into
+            except (ValueError, AttributeError, TypeError) as exc:
+                raise ValueError(
+                    f"Invalid merge_into_id {merge_into!r}: not a valid UUID"
+                ) from exc
 
-                # Delete relations that would become self-loops after merge
-                await conn.execute(
-                    """DELETE FROM relations
-                       WHERE owner_id = $3
-                         AND ((subject_id = $1 AND object_id = $2)
-                              OR (subject_id = $2 AND object_id = $1))""",
-                    proposal.target_id,
-                    target,
-                    self.owner_id,
-                )
+            if target == proposal.target_id:
+                raise ValueError("Cannot merge an entity into itself")
 
-                # Delete relations that would duplicate existing ones after re-pointing.
-                # A relation (old_entity, pred, obj) conflicts if (target, pred, obj) exists.
-                await conn.execute(
-                    """DELETE FROM relations r1
-                       WHERE r1.owner_id = $3 AND r1.subject_id = $1
-                         AND EXISTS (
-                             SELECT 1 FROM relations r2
-                             WHERE r2.subject_id = $2
-                               AND r2.predicate = r1.predicate
-                               AND r2.object_id = r1.object_id
-                         )""",
-                    proposal.target_id,
-                    target,
-                    self.owner_id,
-                )
-                await conn.execute(
-                    """DELETE FROM relations r1
-                       WHERE r1.owner_id = $3 AND r1.object_id = $1
-                         AND EXISTS (
-                             SELECT 1 FROM relations r2
-                             WHERE r2.object_id = $2
-                               AND r2.predicate = r1.predicate
-                               AND r2.subject_id = r1.subject_id
-                         )""",
-                    proposal.target_id,
-                    target,
-                    self.owner_id,
+            # Verify the merge target exists and belongs to this owner, to
+            # avoid opaque FK errors and cross-tenant re-pointing of relations.
+            target_entity = await conn.fetchrow(
+                "SELECT id FROM entities WHERE id = $1 AND owner_id = $2",
+                target,
+                self.owner_id,
+            )
+            if target_entity is None:
+                raise ValueError(
+                    f"Merge target {target} not found for this owner"
                 )
 
-                # Re-point remaining relations from old entity to merge target
-                await conn.execute(
-                    """UPDATE relations SET subject_id = $2, updated_at = NOW()
-                       WHERE subject_id = $1 AND owner_id = $3""",
-                    proposal.target_id,
-                    target,
-                    self.owner_id,
-                )
-                await conn.execute(
-                    """UPDATE relations SET object_id = $2, updated_at = NOW()
-                       WHERE object_id = $1 AND owner_id = $3""",
-                    proposal.target_id,
-                    target,
-                    self.owner_id,
-                )
-                # Delete the old entity
-                await conn.execute(
-                    "DELETE FROM entities WHERE id = $1 AND owner_id = $2",
-                    proposal.target_id,
-                    self.owner_id,
-                )
+            # Delete relations that would become self-loops after merge
+            await conn.execute(
+                """DELETE FROM relations
+                   WHERE owner_id = $3
+                     AND ((subject_id = $1 AND object_id = $2)
+                          OR (subject_id = $2 AND object_id = $1))""",
+                proposal.target_id,
+                target,
+                self.owner_id,
+            )
+
+            # Delete relations that would duplicate existing ones after re-pointing.
+            # A relation (old_entity, pred, obj) conflicts if (target, pred, obj) exists.
+            await conn.execute(
+                """DELETE FROM relations r1
+                   WHERE r1.owner_id = $3 AND r1.subject_id = $1
+                     AND EXISTS (
+                         SELECT 1 FROM relations r2
+                         WHERE r2.subject_id = $2
+                           AND r2.predicate = r1.predicate
+                           AND r2.object_id = r1.object_id
+                     )""",
+                proposal.target_id,
+                target,
+                self.owner_id,
+            )
+            await conn.execute(
+                """DELETE FROM relations r1
+                   WHERE r1.owner_id = $3 AND r1.object_id = $1
+                     AND EXISTS (
+                         SELECT 1 FROM relations r2
+                         WHERE r2.object_id = $2
+                           AND r2.predicate = r1.predicate
+                           AND r2.subject_id = r1.subject_id
+                     )""",
+                proposal.target_id,
+                target,
+                self.owner_id,
+            )
+
+            # Re-point remaining relations from old entity to merge target
+            await conn.execute(
+                """UPDATE relations SET subject_id = $2, updated_at = NOW()
+                   WHERE subject_id = $1 AND owner_id = $3""",
+                proposal.target_id,
+                target,
+                self.owner_id,
+            )
+            await conn.execute(
+                """UPDATE relations SET object_id = $2, updated_at = NOW()
+                   WHERE object_id = $1 AND owner_id = $3""",
+                proposal.target_id,
+                target,
+                self.owner_id,
+            )
+            # Delete the old entity
+            await conn.execute(
+                "DELETE FROM entities WHERE id = $1 AND owner_id = $2",
+                proposal.target_id,
+                self.owner_id,
+            )
 
         else:
             raise ValueError(
