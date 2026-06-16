@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     db_min_connections: int = 2
     db_max_connections: int = 10
 
+    # Vector search tuning (pgvector HNSW).
+    # Because a single HNSW index is shared across tenants, owner_id / type
+    # filters are applied after the ANN candidate cut. Iterative scan keeps the
+    # executor scanning until LIMIT is satisfied post-filter, and a larger
+    # ef_search widens the candidate pool. Requires pgvector >= 0.8 for
+    # iterative scan; on older versions it is silently ignored.
+    hnsw_iterative_scan: str = "relaxed_order"  # off | relaxed_order | strict_order
+    hnsw_ef_search: int = 100
+
     # Embeddings
     ollama_url: str = "http://localhost:11434"
     embedding_model: str = "nomic-embed-text-v2-moe"
